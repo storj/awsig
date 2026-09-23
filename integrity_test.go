@@ -2,7 +2,10 @@ package awsig
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"slices"
 	"strings"
@@ -149,5 +152,41 @@ func BenchmarkCRC64NVMEReader(b *testing.B) {
 	for b.Loop() {
 		r := newIntegrityReader(strings.NewReader(""), []ChecksumAlgorithm{AlgorithmCRC64NVME})
 		_, _ = io.Copy(io.Discard, r)
+	}
+}
+
+func TestChecksumDecodedLengths(t *testing.T) {
+	for _, tc := range []struct {
+		algorithm ChecksumAlgorithm
+		size      int
+	}{
+		{AlgorithmCRC32, 4}, {AlgorithmCRC32C, 4}, {AlgorithmCRC64NVME, 8},
+		{AlgorithmMD5, 16}, {AlgorithmSHA1, 20}, {AlgorithmSHA256, 32},
+		{algorithmHashedPayload, 32},
+	} {
+		for size := tc.size - 2; size <= tc.size+2; size++ {
+			t.Run(fmt.Sprintf("%d/%d", tc.algorithm, size), func(t *testing.T) {
+				digest := make([]byte, size)
+				encoded := base64.StdEncoding.EncodeToString(digest)
+				if tc.algorithm == algorithmHashedPayload {
+					encoded = hex.EncodeToString(digest)
+				}
+				_, constructorErr := NewChecksumRequest(tc.algorithm, encoded)
+				decoded, decodeErr := decodeChecksum(tc.algorithm, []byte(encoded))
+				integrity := make(expectedIntegrity)
+				trailerErr := integrity.setEncoded(tc.algorithm, []byte(encoded))
+				for name, err := range map[string]error{"constructor": constructorErr, "decoder": decodeErr, "trailer": trailerErr} {
+					if size == tc.size && err != nil {
+						t.Errorf("%s: %v", name, err)
+					}
+					if size != tc.size && err == nil {
+						t.Errorf("%s accepted %d-byte %s digest", name, size, tc.algorithm)
+					}
+				}
+				if size == tc.size && !bytes.Equal(decoded, digest) {
+					t.Fatal("decoded digest differs")
+				}
+			})
+		}
 	}
 }
