@@ -38,6 +38,14 @@
   partially parsed query. As in S3, query pairs are split only on `&`; a raw
   `;` is part of the key or value and is signed as `%3B`. Verifiers rewrite
   `r.URL.RawQuery` accordingly, so `r.URL.Query()` returns the verified pairs.
+- Temporary credentials can be validated through `CredentialsProviderWithToken`.
+  Providers implementing only `CredentialsProvider` reject requests carrying an
+  authentication token with `ErrInvalidToken`. SigV4 presigned token query keys
+  are case-sensitive (`X-Amz-Security-Token`); SigV2's query-transported header
+  names are case-insensitive.
+- Duplicate session tokens are rejected with `ErrInvalidToken` before
+  credentials are requested, including header, query, and multipart POST
+  authentication.
 - SigV4 streaming readers reject malformed or incomplete framing and invalid
   lengths, support small read buffers, and retain verification errors on
   subsequent reads. Checksum setup can be retried after an unsuccessful `Reader`
@@ -54,6 +62,10 @@
   `ErrInvalidChecksumRequest`. Requesting the same algorithm twice with the same
   value, such as Content-MD5 together with `X-Amz-Checksum-Md5`, is allowed;
   conflicting values fail with `ErrBadDigest`.
+- New checksum algorithms `AlgorithmSHA512`, `AlgorithmXXHASH64`,
+  `AlgorithmXXHASH3`, and `AlgorithmXXHASH128` are verified in headers and
+  trailers. XXHASH digests are big-endian. The module now depends on
+  `github.com/cespare/xxhash/v2` and `github.com/zeebo/xxh3`.
 - Non-final SigV4 streaming chunks must be at least 8192 bytes (previously
   8000). Smaller chunks fail with the new `ErrInvalidChunkSize`, which also
   matches `ErrEntityTooSmall`.
@@ -64,10 +76,6 @@
   presigned SigV4 requests fail with the new
   `ErrAuthorizationQueryParametersError` instead of
   `ErrAuthorizationHeaderMalformed`.
-- New checksum algorithms `AlgorithmSHA512`, `AlgorithmXXHASH64`,
-  `AlgorithmXXHASH3`, and `AlgorithmXXHASH128` are verified in headers and
-  trailers. XXHASH digests are big-endian. The module now depends on
-  `github.com/cespare/xxhash/v2` and `github.com/zeebo/xxh3`.
 
 ### Test server
 
@@ -76,10 +84,10 @@
   XXHASH3, or XXHASH128 headers, and a single flexible checksum trailer with an
   `aws-chunked` payload. Every supplied checksum is verified. Unsupported or
   inconsistent checksum declarations are rejected with `InvalidRequest`.
-- Oversized multipart metadata returns HTTP 400 with
-  `MaxPostPreDataLengthExceededError` instead of `InternalError`.
+- Invalid tokens and requests return HTTP 400 with `InvalidToken` and
+  `InvalidRequest`, respectively. Oversized multipart metadata returns HTTP 400
+  with `MaxPostPreDataLengthExceededError` instead of `InternalError`.
 - Malformed checksum trailers return HTTP 400 with `MalformedTrailerError`.
-  Invalid requests and checksum requests return HTTP 400 with `InvalidRequest`.
 - Unsigned headers return HTTP 403 with `AccessDenied`. Undersized chunks and
   malformed presigned query parameters return HTTP 400 with
   `InvalidChunkSizeError` and `AuthorizationQueryParametersError`.

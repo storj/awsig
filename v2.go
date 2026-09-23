@@ -378,7 +378,7 @@ func (v2 *V2[T]) verifyPost(ctx context.Context, form PostForm) (v2VerifiedData[
 	}
 
 	accessKeyID := form.Get(queryAWSAccessKeyId).Value
-	secretAccessKey, data, err := v2.provider.Provide(ctx, accessKeyID)
+	secretAccessKey, data, err := provideCredentials(ctx, v2.provider, accessKeyID, postFormSessionTokens(form))
 	if err != nil {
 		return v2VerifiedData[T]{}, err
 	}
@@ -413,7 +413,7 @@ func (v2 *V2[T]) verify(r *http.Request, query url.Values, virtualHostedBucket s
 		return v2VerifiedData[T]{}, err
 	}
 
-	secretAccessKey, data, err := v2.provider.Provide(r.Context(), authorization.accessKeyID)
+	secretAccessKey, data, err := provideCredentials(r.Context(), v2.provider, authorization.accessKeyID, r.Header.Values(queryXAmzSecurityToken))
 	if err != nil {
 		return v2VerifiedData[T]{}, err
 	}
@@ -427,6 +427,66 @@ func (v2 *V2[T]) verify(r *http.Request, query url.Values, virtualHostedBucket s
 	return v2VerifiedData[T]{
 		authData: data,
 	}, nil
+}
+
+// validV2QueryHeader applies HTTP header syntax rules to URL-decoded fields.
+// Unlike actual HTTP headers, query parameters have not passed HTTP validation.
+func validV2QueryHeader(name, value string) bool {
+	if name == "" {
+		return false
+	}
+	for i := range len(name) {
+		c := name[i]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("!#$%&'*+-.^_`|~", rune(c)) {
+			continue
+		}
+		return false
+	}
+	for i := range len(value) {
+		if c := value[i]; c < ' ' && c != '\t' || c == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+// v2PresignedRequest restores headers transported in the query by SigV2 signers.
+// Reject ambiguous values so credential lookup and signature verification use
+// the same headers, without modifying the caller's request.
+func v2PresignedRequest(r *http.Request, query url.Values) (*http.Request, error) {
+	request := new(http.Request)
+	*request = *r
+	request.Header = r.Header.Clone()
+	if request.Header == nil {
+		request.Header = make(http.Header)
+	}
+	seen := make(map[string]bool)
+	for key, values := range query {
+		originalKey := key
+		key = strings.ToLower(key)
+		if !strings.HasPrefix(key, xAmzHeaderPrefix) && key != headerContentType && key != headerContentMD5 {
+			continue
+		}
+		invalidHeader := ErrInvalidRequest
+		if key == strings.ToLower(queryXAmzSecurityToken) {
+			invalidHeader = ErrInvalidToken
+		}
+		if seen[key] || len(values) != 1 {
+			return nil, nestError(invalidHeader, "ambiguous presigned header: %s", key)
+		}
+		if !validV2QueryHeader(originalKey, values[0]) {
+			return nil, nestError(ErrInvalidRequest, "invalid presigned header: %q", originalKey)
+		}
+		seen[key] = true
+		// Query transport preserves whitespace that HTTP parsers trim. SigV2
+		// signers trim surrounding whitespace before canonicalizing headers.
+		value := strings.TrimSpace(values[0])
+		if existing := request.Header.Values(key); len(existing) != 0 && (len(existing) != 1 || strings.TrimSpace(existing[0]) != value) {
+			return nil, nestError(invalidHeader, "conflicting presigned header: %s", key)
+		}
+		request.Header.Set(key, value)
+	}
+	return request, nil
 }
 
 func (v2 *V2[T]) verifyPresigned(r *http.Request, query url.Values, virtualHostedBucket string) (v2VerifiedData[T], error) {
@@ -453,7 +513,11 @@ func (v2 *V2[T]) verifyPresigned(r *http.Request, query url.Values, virtualHoste
 	}
 
 	accessKeyID := query.Get(queryAWSAccessKeyId)
-	secretAccessKey, data, err := v2.provider.Provide(r.Context(), accessKeyID)
+	r, err = v2PresignedRequest(r, query)
+	if err != nil {
+		return v2VerifiedData[T]{}, err
+	}
+	secretAccessKey, data, err := provideCredentials(r.Context(), v2.provider, accessKeyID, r.Header.Values(queryXAmzSecurityToken))
 	if err != nil {
 		return v2VerifiedData[T]{}, err
 	}
@@ -469,6 +533,9 @@ func (v2 *V2[T]) verifyPresigned(r *http.Request, query url.Values, virtualHoste
 
 // Verify verifies the AWS Signature Version 2 for the given request and
 // returns a verified request.
+//
+// Presigned query headers (x-amz-*, content-type, and content-md5) are verified
+// without changing r.Header; applications must read these values from the query.
 //
 // See [VerifiedRequest.PostForm] for multipart POST policy validation requirements.
 func (v2 *V2[T]) Verify(r *http.Request, virtualHostedBucket string) (*V2VerifiedRequest[T], error) {

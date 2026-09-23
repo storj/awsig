@@ -1,10 +1,8 @@
 package awsig
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
-	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -78,9 +76,9 @@ func TestV2SubresourcePolicyPOST(t *testing.T) {
 		for _, version := range []int{2, 4} {
 			for _, combined := range []bool{false, true} {
 				t.Run(fmt.Sprintf("%s/v%d/combined=%t", selector, version, combined), func(t *testing.T) {
-					r := postRequest(t, version, now)
+					r := sessionRequest(t, version, "POST", "", now)
 					r.URL.RawQuery = selector
-					v := NewV2V4(simpleCredentialsProvider{accessKeyID: "key", secretAccessKey: "secret"}, V4Config{Region: "us-east-1", Service: "s3"})
+					v := NewV2V4(tokenlessProvider{}, V4Config{Region: "us-east-1", Service: "s3"})
 					v.v4.now = func() time.Time { return now }
 					var err error
 					switch {
@@ -102,37 +100,4 @@ func TestV2SubresourcePolicyPOST(t *testing.T) {
 			}
 		}
 	}
-}
-
-func postRequest(t *testing.T, version int, now time.Time) *http.Request {
-	t.Helper()
-	date := now.UTC().Format(timeFormatISO8601)
-	sc := scope{date: date[:8], region: "us-east-1", service: "s3"}
-	form := map[string]string{"policy": "e30="}
-	if version == 2 {
-		form[queryAWSAccessKeyId] = "key"
-		form[querySignature] = NewV2[string](nil).calculatePostSignature(form["policy"], "secret").String()
-	} else {
-		v4 := NewV4[string](nil, V4Config{Region: "us-east-1", Service: "s3"})
-		form[queryXAmzAlgorithm] = "AWS4-HMAC-SHA256"
-		form[queryXAmzCredential] = "key/" + sc.String()
-		form[queryXAmzDate] = date
-		form[queryXAmzSignature] = v4.calculatePostSignature(signatureV4Data{scope: sc, digest: []byte(form["policy"])}, "secret").String()
-	}
-	var body bytes.Buffer
-	mw := multipart.NewWriter(&body)
-	for k, v := range form {
-		if err := mw.WriteField(k, v); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := mw.CreateFormFile("file", "test.txt"); err != nil {
-		t.Fatal(err)
-	}
-	if err := mw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	r := httptest.NewRequest(http.MethodPost, "https://example.com/bucket", &body)
-	r.Header.Set("Content-Type", mw.FormDataContentType())
-	return r
 }

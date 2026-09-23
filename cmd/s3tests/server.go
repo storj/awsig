@@ -685,6 +685,8 @@ func xmlHTTPError(ctx context.Context, log *slog.Logger, w http.ResponseWriter, 
 
 func awsigErrorToHTTPError(ctx context.Context, log *slog.Logger, w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, awsig.ErrInvalidToken):
+		xmlHTTPError(ctx, log, w, http.StatusBadRequest, "InvalidToken", "The provided token is malformed or otherwise invalid.")
 	case errors.Is(err, awsig.ErrMalformedTrailer):
 		xmlHTTPError(ctx, log, w, http.StatusBadRequest, "MalformedTrailerError", "The request contained trailing data that was not well-formed or did not conform to our published schema.")
 	case errors.Is(err, awsig.ErrInvalidRequest), errors.Is(err, awsig.ErrInvalidChecksumRequest):

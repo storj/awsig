@@ -15,6 +15,8 @@ import (
 )
 
 var (
+	// ErrInvalidToken indicates an invalid or unsupported session token.
+	ErrInvalidToken = errors.New("the provided session token is invalid or unsupported")
 	// ErrAccessDenied indicates the AccessDenied error code.
 	ErrAccessDenied = errors.New("access denied")
 	// ErrAuthorizationHeaderMalformed indicates the AuthorizationHeaderMalformed error code.
@@ -125,6 +127,40 @@ var ErrMessageTooLarge = errors.New("message too large")
 // zero values alongside the ErrInvalidAccessKeyID error.
 type CredentialsProvider[T any] interface {
 	Provide(ctx context.Context, accessKeyID string) (secretAccessKey string, data T, _ error)
+}
+
+// CredentialsProviderWithToken optionally extends CredentialsProvider for temporary
+// credentials. When implemented, ProvideWithToken is called for every request,
+// including requests without a token (sessionToken is empty). It must validate
+// the token's binding to the access key, expiration, and any other restrictions,
+// returning ErrInvalidToken when validation fails. Provide is not called.
+// Providers must reject an empty sessionToken for access keys that require
+// temporary credentials. Header-authenticated SigV4 reads the token only from
+// the X-Amz-Security-Token header; a query parameter does not supply it.
+// Providers that only implement CredentialsProvider support tokenless requests;
+// requests containing a session token are rejected with ErrInvalidToken.
+type CredentialsProviderWithToken[T any] interface {
+	CredentialsProvider[T]
+	ProvideWithToken(ctx context.Context, accessKeyID, sessionToken string) (secretAccessKey string, data T, err error)
+}
+
+func provideCredentials[T any](ctx context.Context, provider CredentialsProvider[T], accessKeyID string, tokens []string) (string, T, error) {
+	if len(tokens) > 1 {
+		var zero T
+		return "", zero, ErrInvalidToken
+	}
+	var token string
+	if len(tokens) == 1 {
+		token = tokens[0]
+	}
+	if p, ok := provider.(CredentialsProviderWithToken[T]); ok {
+		return p.ProvideWithToken(ctx, accessKeyID, token)
+	}
+	if token != "" {
+		var zero T
+		return "", zero, ErrInvalidToken
+	}
+	return provider.Provide(ctx, accessKeyID)
 }
 
 // PostFormElement represents a single element in a multipart form.
@@ -461,4 +497,13 @@ func parseRequestQuery(r *http.Request) (url.Values, error) {
 	}
 	r.URL.RawQuery = rawQuery
 	return query, nil
+}
+
+func postFormSessionTokens(form PostForm) []string {
+	values := form.Values(queryXAmzSecurityToken)
+	tokens := make([]string, len(values))
+	for i, value := range values {
+		tokens[i] = value.Value
+	}
+	return tokens
 }
