@@ -365,6 +365,93 @@ func (s *service) createBucket(w http.ResponseWriter, r *http.Request) {
 	log.InfoContext(ctx, "created bucket")
 }
 
+// requestChecksums parses inline checksums and the single checksum trailer
+// supported by the verifier. Every supplied checksum is verified.
+func (s *service) requestChecksums(w http.ResponseWriter, r *http.Request) ([]awsig.ChecksumRequest, bool) {
+	ctx, log := r.Context(), s.log
+	invalid := func(message string) ([]awsig.ChecksumRequest, bool) {
+		xmlHTTPError(ctx, log, w, http.StatusBadRequest, "InvalidRequest", message)
+		return nil, false
+	}
+	trailerValues := r.Header.Values("x-amz-trailer")
+	var trailer string
+	if len(trailerValues) > 0 {
+		if len(trailerValues) != 1 {
+			return invalid("Expected a single checksum trailer.")
+		}
+		trailer = strings.ToLower(strings.TrimSpace(trailerValues[0]))
+		if trailer == "" {
+			return invalid("Expected a checksum trailer name.")
+		}
+		chunked := false
+		for _, value := range r.Header.Values("Content-Encoding") {
+			for _, encoding := range strings.Split(value, ",") {
+				if strings.EqualFold(strings.TrimSpace(encoding), "aws-chunked") {
+					chunked = true
+				}
+			}
+		}
+		payload := r.Header.Get("x-amz-content-sha256")
+		if !chunked || (payload != "STREAMING-UNSIGNED-PAYLOAD-TRAILER" && payload != "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER") {
+			return invalid("Checksum trailers require an aws-chunked payload with a trailer signing mode.")
+		}
+	}
+	advertisedValues := r.Header.Values("x-amz-sdk-checksum-algorithm")
+	if len(advertisedValues) > 1 {
+		return invalid("Expected a single checksum algorithm.")
+	}
+	advertised := strings.ToLower(r.Header.Get("x-amz-sdk-checksum-algorithm"))
+	matchedAlgorithm := len(advertisedValues) == 0
+	matchedTrailer := trailer == ""
+	var requests []awsig.ChecksumRequest
+	for _, algorithm := range []awsig.ChecksumAlgorithm{
+		awsig.AlgorithmMD5, awsig.AlgorithmCRC32, awsig.AlgorithmCRC32C,
+		awsig.AlgorithmCRC64NVME, awsig.AlgorithmSHA1, awsig.AlgorithmSHA256,
+	} {
+		header, code := "x-amz-checksum-"+algorithm.String(), "InvalidRequest"
+		if algorithm == awsig.AlgorithmMD5 {
+			header, code = "Content-MD5", "InvalidDigest"
+		}
+		trailing := algorithm != awsig.AlgorithmMD5 && trailer == header
+		values := r.Header.Values(header)
+		if advertised == algorithm.String() && algorithm != awsig.AlgorithmMD5 {
+			matchedAlgorithm = trailing || len(values) > 0
+		}
+		if trailing {
+			if len(values) > 0 {
+				return invalid("A checksum cannot appear in both headers and trailers.")
+			}
+			request, err := awsig.NewTrailingChecksumRequest(algorithm)
+			if err != nil {
+				return invalid(err.Error())
+			}
+			requests = append(requests, request)
+			matchedTrailer = true
+			continue
+		}
+		if len(values) == 0 {
+			continue
+		}
+		if len(values) != 1 {
+			xmlHTTPError(ctx, log, w, http.StatusBadRequest, code, "Expected a single "+header+" value.")
+			return nil, false
+		}
+		request, err := awsig.NewChecksumRequest(algorithm, values[0])
+		if err != nil {
+			xmlHTTPError(ctx, log, w, http.StatusBadRequest, code, "Value for "+header+" header is invalid.")
+			return nil, false
+		}
+		requests = append(requests, request)
+	}
+	if !matchedTrailer {
+		return invalid("Unsupported checksum trailer; expected one x-amz-checksum-* field.")
+	}
+	if !matchedAlgorithm {
+		return invalid("Unsupported checksum algorithm or missing corresponding checksum header or trailer.")
+	}
+	return requests, true
+}
+
 func (s *service) createObject(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	bckt, name := r.PathValue("bucket"), r.PathValue("object")
@@ -377,31 +464,9 @@ func (s *service) createObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var sumReqs []awsig.ChecksumRequest
-	if v, ok := r.Header[http.CanonicalHeaderKey("content-md5")]; ok {
-		cr, err := awsig.NewChecksumRequest(awsig.AlgorithmMD5, v[0])
-		if err != nil {
-			log.WarnContext(ctx, "invalid Content-MD5 header", "value", v[0], "error", err)
-			xmlHTTPError(ctx, log, w, http.StatusBadRequest, "InvalidDigest", "The Content-MD5 you specified was invalid.")
-			return
-		}
-		sumReqs = append(sumReqs, cr)
-	}
-	if strings.EqualFold(r.Header.Get("x-amz-sdk-checksum-algorithm"), "crc32") {
-		if _, ok := r.Header[http.CanonicalHeaderKey("x-amz-checksum-crc32")]; !ok {
-			log.WarnContext(ctx, "x-amz-checksum-crc32 header not found")
-			xmlHTTPError(ctx, log, w, http.StatusBadRequest, "InvalidRequest", "x-amz-sdk-checksum-algorithm specified, but no corresponding x-amz-checksum-* or x-amz-trailer headers were found.")
-			return
-		}
-	}
-	if v, ok := r.Header[http.CanonicalHeaderKey("x-amz-checksum-crc32")]; ok {
-		cr, err := awsig.NewChecksumRequest(awsig.AlgorithmCRC32, v[0])
-		if err != nil {
-			log.WarnContext(ctx, "invalid x-amz-checksum-crc32 header", "value", v[0], "error", err)
-			xmlHTTPError(ctx, log, w, http.StatusBadRequest, "InvalidRequest", "Value for x-amz-checksum-crc32 header is invalid.")
-			return
-		}
-		sumReqs = append(sumReqs, cr)
+	sumReqs, ok := s.requestChecksums(w, r)
+	if !ok {
+		return
 	}
 
 	vr, err := s.v2v4.Verify(r, s.vhost)
@@ -458,6 +523,15 @@ func (s *service) deleteObjects(w http.ResponseWriter, r *http.Request) {
 	}
 	log = log.With("Access Key ID", vr.AuthData().accessKeyID)
 
+	sumReqs, ok := s.requestChecksums(w, r)
+	if !ok {
+		return
+	}
+	if len(sumReqs) == 0 {
+		xmlHTTPError(ctx, log, w, http.StatusBadRequest, "MissingContentMD5", "Missing required Content-MD5 or supported checksum header or trailer.")
+		return
+	}
+
 	type (
 		deleteObject struct {
 			ETag             string `xml:"ETag"`
@@ -473,7 +547,7 @@ func (s *service) deleteObjects(w http.ResponseWriter, r *http.Request) {
 		}
 	)
 
-	rd, err := vr.Reader()
+	rd, err := vr.Reader(sumReqs...)
 	if err != nil {
 		log.WarnContext(ctx, "failed to get verified reader", "error", err)
 		awsigErrorToHTTPError(ctx, log, w, err)
@@ -484,6 +558,13 @@ func (s *service) deleteObjects(w http.ResponseWriter, r *http.Request) {
 	if err := xml.NewDecoder(rd).Decode(&request); err != nil {
 		log.WarnContext(ctx, "failed to decode delete request", "error", err)
 		xmlHTTPError(ctx, log, w, http.StatusBadRequest, "MalformedXML", "The XML that you provided was not well formed or did not validate against our published schema.")
+		return
+	}
+
+	// Decoding XML may stop before EOF, where body integrity is verified.
+	if _, err := io.Copy(io.Discard, rd); err != nil {
+		log.WarnContext(ctx, "failed to verify delete request body", "error", err)
+		awsigErrorToHTTPError(ctx, log, w, err)
 		return
 	}
 
@@ -606,6 +687,8 @@ func awsigErrorToHTTPError(ctx context.Context, log *slog.Logger, w http.Respons
 		xmlHTTPError(ctx, log, w, http.StatusBadRequest, "MalformedTrailerError", "The request contained trailing data that was not well-formed or did not conform to our published schema.")
 	case errors.Is(err, awsig.ErrInvalidRequest), errors.Is(err, awsig.ErrInvalidChecksumRequest):
 		xmlHTTPError(ctx, log, w, http.StatusBadRequest, "InvalidRequest", "The request is invalid.")
+	case errors.Is(err, awsig.ErrMessageTooLarge):
+		xmlHTTPError(ctx, log, w, http.StatusBadRequest, "MaxPostPreDataLengthExceededError", "Your POST request fields preceding the upload file were too large.")
 	case errors.Is(err, awsig.ErrBadDigest):
 		xmlHTTPError(ctx, log, w, http.StatusBadRequest, "BadDigest", "The Content-MD5 or checksum value that you specified did not match what the server received.")
 	case errors.Is(err, awsig.ErrInvalidChunkSize):

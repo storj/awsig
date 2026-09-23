@@ -67,6 +67,13 @@
 
 ### Test server
 
+- DeleteObjects verifies the complete body before deleting objects. It accepts
+  Content-MD5, CRC32, CRC32C, CRC64NVME, SHA-1, or SHA-256 headers, and a single
+  flexible checksum trailer with an `aws-chunked` payload. Every supplied
+  checksum is verified. Unsupported or inconsistent checksum declarations are
+  rejected with `InvalidRequest`.
+- Oversized multipart metadata returns HTTP 400 with
+  `MaxPostPreDataLengthExceededError` instead of `InternalError`.
 - Malformed checksum trailers return HTTP 400 with `MalformedTrailerError`.
   Invalid requests and checksum requests return HTTP 400 with `InvalidRequest`.
 - Unsigned headers return HTTP 403 with `AccessDenied`. Undersized chunks and
