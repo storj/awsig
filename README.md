@@ -20,6 +20,19 @@ not normalized.
 - [ ] do shallow test runs with all publicly available AWS SDKs
     - [ ] SDKs act differently with and without TLS and with different checksum options
 
+## SigV2 compatibility
+
+The signed subresource list matches `HmacV1Auth.QSAOfInterest` from
+[botocore 1.40.0](https://github.com/boto/botocore/blob/1.40.0/botocore/auth.py#L795-L834),
+including `storageClass` and `defaultObjectAcl`. The verifier uses this single
+list; it does not retry with another client's canonicalization rules.
+
+SigV2 requests containing `encryption`, `legal-hold`, `retention`,
+`intelligent-tiering`, `ownershipControls`, `policyStatus`, or `publicAccessBlock`
+are rejected with `ErrInvalidRequest` and must use SigV4. Botocore's SigV2 list
+does not sign these operation selectors. Applications adding other operation
+selectors absent from the list must also require SigV4 for those operations.
+
 ## POST policy validation
 
 For multipart POST uploads, `Verify` authenticates the signature over the policy;

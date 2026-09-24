@@ -155,7 +155,7 @@ func TestCalculateSignatureV2Subresources(t *testing.T) {
 	}
 
 	base := sign("/bucket/key")
-	for _, subresource := range []string{"tagging", "retention", "legal-hold", "cors", "restore", "encryption", "object-lock"} {
+	for _, subresource := range []string{"tagging", "defaultObjectAcl", "storageClass", "cors", "restore", "object-lock"} {
 		t.Run(subresource, func(t *testing.T) {
 			assert.False(t, base.compare(sign("/bucket/key?"+subresource)))
 		})

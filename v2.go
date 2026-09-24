@@ -24,34 +24,32 @@ const (
 	querySignature      = "Signature"
 )
 
-// v2SignedSubresources is the read-only set of query fields included in SigV2 signatures.
+// v2SignedSubresources matches HmacV1Auth.QSAOfInterest in botocore 1.40.0:
+// https://github.com/boto/botocore/blob/1.40.0/botocore/auth.py#L795-L834
+// Keep one canonicalization policy; do not retry signatures with other SDK lists.
+// Known operation selectors outside this list are rejected by validateV2Query.
 var v2SignedSubresources = map[string]struct{}{
 	"accelerate":                   {},
 	"acl":                          {},
 	"analytics":                    {},
 	"cors":                         {},
+	"defaultObjectAcl":             {},
 	"delete":                       {},
-	"encryption":                   {},
-	"intelligent-tiering":          {},
 	"inventory":                    {},
-	"legal-hold":                   {},
 	"lifecycle":                    {},
 	"location":                     {},
 	"logging":                      {},
 	"metrics":                      {},
 	"notification":                 {},
 	"object-lock":                  {},
-	"ownershipControls":            {},
 	"partNumber":                   {},
 	"policy":                       {},
-	"policyStatus":                 {},
-	"publicAccessBlock":            {},
 	"replication":                  {},
 	"requestPayment":               {},
 	"restore":                      {},
-	"retention":                    {},
 	"select":                       {},
 	"select-type":                  {},
+	"storageClass":                 {},
 	"tagging":                      {},
 	"torrent":                      {},
 	"uploadId":                     {},
@@ -66,6 +64,17 @@ var v2SignedSubresources = map[string]struct{}{
 	"response-cache-control":       {},
 	"response-content-disposition": {},
 	"response-content-encoding":    {},
+}
+
+// validateV2Query prevents known operation selectors omitted by the pinned
+// signer from being accepted as unsigned parameters. Use SigV4 for these APIs.
+func validateV2Query(query url.Values) error {
+	for _, key := range []string{"encryption", "legal-hold", "retention", "intelligent-tiering", "ownershipControls", "policyStatus", "publicAccessBlock"} {
+		if query.Has(key) {
+			return nestError(ErrInvalidRequest, "the %s operation requires SigV4", key)
+		}
+	}
+	return nil
 }
 
 type v2Reader struct {
@@ -386,6 +395,9 @@ func (v2 *V2[T]) verifyPost(ctx context.Context, form PostForm) (v2VerifiedData[
 }
 
 func (v2 *V2[T]) verify(r *http.Request, query url.Values, virtualHostedBucket string) (v2VerifiedData[T], error) {
+	if err := validateV2Query(query); err != nil {
+		return v2VerifiedData[T]{}, err
+	}
 	headerDateValue, parsedDateTime, err := v2.parseTime(r.Header)
 	if err != nil {
 		return v2VerifiedData[T]{}, err
@@ -420,6 +432,9 @@ func (v2 *V2[T]) verify(r *http.Request, query url.Values, virtualHostedBucket s
 }
 
 func (v2 *V2[T]) verifyPresigned(r *http.Request, query url.Values, virtualHostedBucket string) (v2VerifiedData[T], error) {
+	if err := validateV2Query(query); err != nil {
+		return v2VerifiedData[T]{}, err
+	}
 	rawExpires := query.Get(queryExpires)
 
 	expires, err := strconv.ParseInt(rawExpires, 10, 64)
@@ -471,6 +486,9 @@ func (v2 *V2[T]) Verify(r *http.Request, virtualHostedBucket string) (*V2Verifie
 
 	switch {
 	case r.Method == http.MethodPost && typ == "multipart/form-data":
+		if err := validateV2Query(query); err != nil {
+			return nil, err
+		}
 		file, form, err := parseMultipartFormUntilFile(r.Body, params["boundary"])
 		if err != nil {
 			return nil, nestError(ErrMalformedPOSTRequest, "parse multipart form: %w", err)

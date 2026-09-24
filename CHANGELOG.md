@@ -7,10 +7,12 @@
 - SigV2 retains legacy path-style bucket-only canonicalization: requests sent
   to `/bucket` are signed as `/bucket/` for compatibility with existing clients.
   Object paths and virtual-hosted requests are unchanged.
-- SigV2 signs decoded subresource and `response-*` query values. More
-  subresources are included in signatures, including `tagging`, `retention`,
-  `legal-hold`, `cors`, `restore`, `encryption`, and `object-lock`; changing these
-  parameters now changes the expected signature.
+- SigV2 signs decoded subresource and `response-*` query values using the
+  botocore 1.40.0 subresource list, including `storageClass`, `defaultObjectAcl`,
+  `tagging`, `cors`, `restore`, and `object-lock`. Known operation selectors
+  excluded by that list (`encryption`, `legal-hold`, `retention`,
+  `intelligent-tiering`, `ownershipControls`, `policyStatus`, and
+  `publicAccessBlock`) are rejected with `ErrInvalidRequest`; use SigV4 for them.
 - SigV4 S3 canonicalization preserves the escaped path exactly as sent, including
   encoded slashes and the case of percent escapes, instead of decoding and
   re-encoding it. Non-S3 services apply another URI-encoding pass to the escaped

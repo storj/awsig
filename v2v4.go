@@ -49,6 +49,9 @@ func (v2v4 *V2V4[T]) Verify(r *http.Request, virtualHostedBucket string) (Verifi
 			}
 			return newV4VerifiedRequestWithForm(file, data, form)
 		} else if form.Has(queryAWSAccessKeyId) {
+			if err := validateV2Query(query); err != nil {
+				return nil, err
+			}
 			data, err := v2v4.v2.verifyPost(r.Context(), form)
 			if err != nil {
 				return nil, err
