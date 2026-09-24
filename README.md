@@ -10,8 +10,9 @@ for building AWS-compatible services.
 | SigV4 |            ✓            |         ✓        |                  ✓                 |                  ✓                 |                      ✓                     |              _unimplemented_             |                  _unimplemented_                 |     ✓     |         ✓        |
 
 This package was written with S3 and certain security and performance
-characteristics in mind, but it should work for other service clones as
-well.
+characteristics in mind. Support for other service clones is partial: non-S3
+paths are encoded again for signing, but dot segments and repeated slashes are
+not normalized.
 
 ### TODO
 
