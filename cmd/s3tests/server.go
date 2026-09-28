@@ -407,6 +407,8 @@ func (s *service) requestChecksums(w http.ResponseWriter, r *http.Request) ([]aw
 	for _, algorithm := range []awsig.ChecksumAlgorithm{
 		awsig.AlgorithmMD5, awsig.AlgorithmCRC32, awsig.AlgorithmCRC32C,
 		awsig.AlgorithmCRC64NVME, awsig.AlgorithmSHA1, awsig.AlgorithmSHA256,
+		awsig.AlgorithmSHA512, awsig.AlgorithmXXHASH64, awsig.AlgorithmXXHASH3,
+		awsig.AlgorithmXXHASH128,
 	} {
 		header, code := "x-amz-checksum-"+algorithm.String(), "InvalidRequest"
 		if algorithm == awsig.AlgorithmMD5 {

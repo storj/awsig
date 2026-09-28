@@ -64,14 +64,18 @@
   presigned SigV4 requests fail with the new
   `ErrAuthorizationQueryParametersError` instead of
   `ErrAuthorizationHeaderMalformed`.
+- New checksum algorithms `AlgorithmSHA512`, `AlgorithmXXHASH64`,
+  `AlgorithmXXHASH3`, and `AlgorithmXXHASH128` are verified in headers and
+  trailers. XXHASH digests are big-endian. The module now depends on
+  `github.com/cespare/xxhash/v2` and `github.com/zeebo/xxh3`.
 
 ### Test server
 
 - DeleteObjects verifies the complete body before deleting objects. It accepts
-  Content-MD5, CRC32, CRC32C, CRC64NVME, SHA-1, or SHA-256 headers, and a single
-  flexible checksum trailer with an `aws-chunked` payload. Every supplied
-  checksum is verified. Unsupported or inconsistent checksum declarations are
-  rejected with `InvalidRequest`.
+  Content-MD5, CRC32, CRC32C, CRC64NVME, SHA-1, SHA-256, SHA-512, XXHASH64,
+  XXHASH3, or XXHASH128 headers, and a single flexible checksum trailer with an
+  `aws-chunked` payload. Every supplied checksum is verified. Unsupported or
+  inconsistent checksum declarations are rejected with `InvalidRequest`.
 - Oversized multipart metadata returns HTTP 400 with
   `MaxPostPreDataLengthExceededError` instead of `InternalError`.
 - Malformed checksum trailers return HTTP 400 with `MalformedTrailerError`.

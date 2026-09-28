@@ -192,3 +192,60 @@ func TestChecksumDecodedLengths(t *testing.T) {
 		}
 	}
 }
+
+func TestAdditionalChecksumAlgorithms(t *testing.T) {
+	for _, tc := range []struct {
+		algorithm ChecksumAlgorithm
+		name      string
+		body      string
+		want      string // big-endian digest in hex
+	}{
+		{AlgorithmSHA512, "sha512", "hello", "9b71d224bd62f3785d96d46ad3ea3d73319bfbc2890caadae2dff72519673ca72323c3d99ba5c11d7c7acc6e14b8c5da0c4663475c2e5c3adef46f73bcdec043"},
+		// Reference values for the empty input from the xxHash specification.
+		{AlgorithmXXHASH64, "xxhash64", "", "ef46db3751d8e999"},
+		{AlgorithmXXHASH3, "xxhash3", "", "2d06800538d394c2"},
+		{AlgorithmXXHASH128, "xxhash128", "", "99aa06d3014798d86001c324468d497f"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.name, tc.algorithm.String())
+			digest, err := hex.DecodeString(tc.want)
+			assert.NoError(t, err)
+			encoded := base64.StdEncoding.EncodeToString(digest)
+
+			read := func(body string, reqs ...ChecksumRequest) (Reader, error) {
+				vr, err := newV4VerifiedRequest(strings.NewReader(body), v4VerifiedData[struct{}]{options: parsedXAmzContentSHA256{unsigned: true}})
+				assert.NoError(t, err)
+				rd, err := vr.Reader(reqs...)
+				assert.NoError(t, err)
+				_, err = io.ReadAll(rd)
+				return rd, err
+			}
+
+			req, err := NewChecksumRequest(tc.algorithm, encoded)
+			assert.NoError(t, err)
+			rd, err := read(tc.body, req)
+			assert.NoError(t, err)
+			sums, err := rd.Checksums()
+			assert.NoError(t, err)
+			assert.Equal(t, digest, sums[tc.algorithm])
+
+			_, err = read(tc.body+"x", req)
+			var mismatch ChecksumMismatchError
+			assert.That(t, errors.As(err, &mismatch))
+
+			trailer := fmt.Sprintf("0\r\nx-amz-checksum-%s:%s\r\n\r\n", tc.name, encoded)
+			if tc.body != "" {
+				trailer = fmt.Sprintf("%x\r\n%s\r\n", len(tc.body), tc.body) + trailer
+			}
+			opts := parsedXAmzContentSHA256{unsigned: true, streaming: true, trailer: true, decodedContentLength: int64(len(tc.body))}
+			assert.NoError(t, opts.parseTrailer([]string{"x-amz-checksum-" + tc.name}))
+			assert.Equal(t, tc.algorithm, opts.trailerAlgo)
+			vr, err := newV4VerifiedRequest(strings.NewReader(trailer), v4VerifiedData[struct{}]{options: opts})
+			assert.NoError(t, err)
+			rd, err = vr.Reader()
+			assert.NoError(t, err)
+			_, err = io.ReadAll(rd)
+			assert.NoError(t, err)
+		})
+	}
+}

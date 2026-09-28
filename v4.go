@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/sha512"
 	"errors"
 	"fmt"
 	"hash"
@@ -53,6 +54,8 @@ const (
 	chunkSignaturePrefix         = "chunk-signature="
 	chunkTrailingHeaderPrefix    = "x-amz-checksum-"
 	chunkTrailingSignaturePrefix = "x-amz-trailer-signature:"
+	// chunkMaxTrailerLength fits the longest trailer, SHA-512, with its line feed.
+	chunkMaxTrailerLength = len(chunkTrailingHeaderPrefix+"sha512:") + (sha512.Size+2)/3*4 + 1
 
 	cr = '\r'
 	lf = '\n'
@@ -75,7 +78,7 @@ type v4Reader struct {
 	integrity            expectedIntegrity
 	decodedContentLength int64
 
-	metadata               [len(chunkTrailingSignaturePrefix) + signatureV4EncodedLength]byte
+	metadata               [max(chunkMaxTrailerLength, len(chunkTrailingSignaturePrefix)+signatureV4EncodedLength)]byte
 	err                    error
 	chunkCount             int
 	chunkBytesLeft         int64

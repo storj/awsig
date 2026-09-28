@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"crypto/sha1"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -17,6 +18,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/cespare/xxhash/v2"
+	"github.com/zeebo/xxh3"
 )
 
 // ChecksumAlgorithm represents different checksum algorithms supported
@@ -38,6 +42,14 @@ const (
 	AlgorithmSHA1
 	// AlgorithmSHA256 represents the SHA-256 checksum algorithm.
 	AlgorithmSHA256
+	// AlgorithmSHA512 represents the SHA-512 checksum algorithm.
+	AlgorithmSHA512
+	// AlgorithmXXHASH64 represents the XXH64 checksum algorithm.
+	AlgorithmXXHASH64
+	// AlgorithmXXHASH3 represents the 64-bit XXH3 checksum algorithm.
+	AlgorithmXXHASH3
+	// AlgorithmXXHASH128 represents the 128-bit XXH3 checksum algorithm.
+	AlgorithmXXHASH128
 	algorithmHashedPayload
 )
 
@@ -53,6 +65,12 @@ func (a ChecksumAlgorithm) size() int {
 		return sha1.Size
 	case AlgorithmSHA256, algorithmHashedPayload:
 		return sha256.Size
+	case AlgorithmSHA512:
+		return sha512.Size
+	case AlgorithmXXHASH64, AlgorithmXXHASH3:
+		return 8
+	case AlgorithmXXHASH128:
+		return 16
 	default:
 		return 0
 	}
@@ -82,6 +100,14 @@ func (a ChecksumAlgorithm) String() string {
 		return "sha1"
 	case AlgorithmSHA256, algorithmHashedPayload:
 		return "sha256"
+	case AlgorithmSHA512:
+		return "sha512"
+	case AlgorithmXXHASH64:
+		return "xxhash64"
+	case AlgorithmXXHASH3:
+		return "xxhash3"
+	case AlgorithmXXHASH128:
+		return "xxhash128"
 	default:
 		return strconv.Itoa(int(a))
 	}
@@ -259,6 +285,16 @@ func (r *integrityReader) verify(integrity expectedIntegrity) error {
 	return errs
 }
 
+// xxh3128 is an XXH3 hasher that sums to the big-endian 128-bit digest.
+type xxh3128 struct{ *xxh3.Hasher }
+
+func (h xxh3128) Size() int { return 16 }
+
+func (h xxh3128) Sum(b []byte) []byte {
+	sum := h.Sum128().Bytes()
+	return append(b, sum[:]...)
+}
+
 var crc64NVMETable = sync.OnceValue(func() *crc64.Table {
 	return crc64.MakeTable(0x9a6c_9329_ac4b_c9b5)
 })
@@ -299,6 +335,22 @@ func newIntegrityReader(r io.Reader, algorithms []ChecksumAlgorithm) *integrityR
 			h = sha256.New()
 			ir.hashes[AlgorithmSHA256] = h
 			ir.hashes[algorithmHashedPayload] = h
+			writers = append(writers, h)
+		case AlgorithmSHA512:
+			h = sha512.New()
+			ir.hashes[AlgorithmSHA512] = h
+			writers = append(writers, h)
+		case AlgorithmXXHASH64:
+			h = xxhash.New()
+			ir.hashes[AlgorithmXXHASH64] = h
+			writers = append(writers, h)
+		case AlgorithmXXHASH3:
+			h = xxh3.New()
+			ir.hashes[AlgorithmXXHASH3] = h
+			writers = append(writers, h)
+		case AlgorithmXXHASH128:
+			h = xxh3128{xxh3.New()}
+			ir.hashes[AlgorithmXXHASH128] = h
 			writers = append(writers, h)
 		}
 	}
