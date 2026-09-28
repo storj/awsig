@@ -214,6 +214,40 @@ func testV4[T VerifiedRequest[exampleAuthData]](t *testing.T, newV4 func(Credent
 				AlgorithmMD5:    {0xda, 0x0d, 0x2e, 0x17, 0xcd, 0x5a, 0x8f, 0x14, 0x63, 0x3c, 0x6b, 0x4a, 0xeb, 0xad, 0x7e, 0x02},
 			}, checksums)
 		})
+		t.Run("signed truncated", func(t *testing.T) {
+			for _, ending := range []string{"", "\r"} {
+				body := bytes.NewBuffer(nil)
+				body.WriteString("10000;chunk-signature=b474d8862b1487a5145d686f57f013e54db672cee1c953b3010fb58501ef5aa2\r\n")
+				body.Write(bytes.Repeat([]byte{'a'}, 65536))
+				body.WriteString("\r\n")
+				body.WriteString("400;chunk-signature=1c1344b170168f8e65b41376b44b20fe354e373826ccbbe2c1d40a8cae51e5c7\r\n")
+				body.Write(bytes.Repeat([]byte{'a'}, 1024))
+				body.WriteString("\r\n")
+				body.WriteString("0;chunk-signature=2ca2aba2005185cf7159c6277faf83795951dd77a3a99e6e65d5c9f85863f992\r\n")
+				body.WriteString("x-amz-checksum-crc32c:sOO8/Q==\r\n")
+				body.WriteString("x-amz-trailer-signature:d81f82fc3505edab99d459891051a732e8730629a2e4a59689829ca17fe2e435\r\n" + ending)
+
+				req := httptest.NewRequest(http.MethodPut, "https://s3.amazonaws.com/examplebucket/chunkObject.txt", body)
+				req.Header.Add("x-amz-date", "20130524T000000Z")
+				req.Header.Add("x-amz-storage-class", "REDUCED_REDUNDANCY")
+				req.Header.Add("Authorization", "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request,SignedHeaders=content-encoding;host;x-amz-content-sha256;x-amz-date;x-amz-decoded-content-length;x-amz-storage-class;x-amz-trailer,Signature=106e2a8a18243abcf37539882f36619c00e2dfc72633413f02d3b74544bfeb8e")
+				req.Header.Add("x-amz-content-sha256", "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER")
+				req.Header.Add("Content-Encoding", "aws-chunked")
+				req.Header.Add("x-amz-decoded-content-length", "66560")
+				req.Header.Add("x-amz-trailer", "x-amz-checksum-crc32c")
+				req.Header.Add("Content-Length", "66824")
+
+				vr, err := v4.Verify(req, "")
+				assert.NoError(t, err)
+
+				r, err := vr.Reader()
+				assert.NoError(t, err)
+
+				_, err = io.ReadAll(r)
+				assert.True(t, errors.Is(err, ErrMalformedTrailer))
+				assert.True(t, errors.Is(err, io.ErrUnexpectedEOF))
+			}
+		})
 		t.Run("unsigned", func(t *testing.T) {
 			body := bytes.NewBuffer(nil)
 			body.WriteString("2000\r\n")

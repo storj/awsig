@@ -111,12 +111,14 @@ func TestReaderRetryAfterFailedChecksumRequest(t *testing.T) {
 	assert.NoError(t, err)
 	sha1Req, err := NewChecksumRequest(AlgorithmSHA1, "2jmj7l5rSw0yVb/vlWAYkK/YBwk=")
 	assert.NoError(t, err)
+	otherSHA1Req, err := NewChecksumRequest(AlgorithmSHA1, "qvTGHdzF6KLavt4PO0gs2a6pQ00=")
+	assert.NoError(t, err)
 
 	t.Run("V2", func(t *testing.T) {
 		vr, err := newV2VerifiedRequest(strings.NewReader(""), v2VerifiedData[struct{}]{})
 		assert.NoError(t, err)
-		_, err = vr.Reader(sha1Req, sha1Req)
-		assert.Error(t, err)
+		_, err = vr.Reader(sha1Req, otherSHA1Req)
+		assert.That(t, errors.Is(err, ErrBadDigest))
 		_, err = vr.Reader(sha1Req, crc32Req)
 		assert.NoError(t, err)
 	})
@@ -125,8 +127,8 @@ func TestReaderRetryAfterFailedChecksumRequest(t *testing.T) {
 			options: parsedXAmzContentSHA256{unsigned: true},
 		})
 		assert.NoError(t, err)
-		_, err = vr.Reader(sha1Req, sha1Req)
-		assert.Error(t, err)
+		_, err = vr.Reader(sha1Req, otherSHA1Req)
+		assert.That(t, errors.Is(err, ErrBadDigest))
 		rd, err := vr.Reader(sha1Req, crc32Req)
 		assert.NoError(t, err)
 		_, err = io.ReadAll(rd)

@@ -1,6 +1,7 @@
 package awsig
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha1"
@@ -135,24 +136,21 @@ func (vr *V2VerifiedRequest[T]) PostForm() PostForm {
 	return vr.form
 }
 
-func (vr *V2VerifiedRequest[T]) addAlgorithm(algorithm ChecksumAlgorithm) error {
-	if slices.Contains(vr.algorithms, algorithm) {
-		return errors.New("algorithm already added")
-	}
-	vr.algorithms = append(vr.algorithms, algorithm)
-	return nil
-}
-
 func (vr *V2VerifiedRequest[T]) requestChecksum(req ChecksumRequest) error {
 	if !req.valid() {
 		return fmt.Errorf("uninitialized request")
 	}
 	if req.trailing {
-		return fmt.Errorf("could not add %s: trailing checksums are not supported in V2", req.algorithm)
+		return nestError(ErrInvalidChecksumRequest, "could not add %s: trailing checksums are not supported in V2", req.algorithm)
 	}
-	if err := vr.addAlgorithm(req.algorithm); err != nil {
-		return fmt.Errorf("could not add %s: %w", req.algorithm, err)
+	if expected, ok := vr.integrity[req.algorithm]; ok {
+		// Content-MD5 and X-Amz-Checksum-Md5 may both carry the same digest.
+		if !bytes.Equal(expected, req.value) {
+			return nestError(ErrBadDigest, "conflicting %s checksums were provided", req.algorithm)
+		}
+		return nil
 	}
+	vr.algorithms = append(vr.algorithms, req.algorithm)
 	vr.integrity.setDecoded(req.algorithm, req.value)
 	return nil
 }

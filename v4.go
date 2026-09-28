@@ -25,6 +25,7 @@ const (
 	headerHost                     = "host"
 	headerTransferEncoding         = "transfer-encoding"
 	headerXAmzDecodedContentLength = xAmzHeaderPrefix + "decoded-content-length"
+	headerXAmzTrailer              = xAmzHeaderPrefix + "trailer"
 
 	v4AuthorizationHeaderCredentialPrefix     = "Credential="
 	v4AuthorizationHeaderSignedHeadersPrefix  = "SignedHeaders="
@@ -219,23 +220,32 @@ func (r *v4Reader) currentChunkSignatureData() signatureV4Data {
 	}
 }
 
-func (r *v4Reader) readChunkTrailer(buf []byte) error {
+func (r *v4Reader) readChunkTrailer(buf []byte) (err error) {
+	defer func() {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			err = nestError(ErrMalformedTrailer, "incomplete checksum trailer: %w", io.ErrUnexpectedEOF)
+		}
+	}()
+
 	name := chunkTrailingHeaderPrefix + r.trailingSumAlgo.String() + ":"
 
 	length := len(name)
 	length += r.trailingSumAlgo.base64Length()
 
-	buf, err := reuseBuffer(buf, length+1) // +1 for the trailing LF
+	buf, err = reuseBuffer(buf, length+1) // +1 for the trailing LF
 	if err != nil {
 		return err
 	}
 
-	if _, err = io.ReadFull(r.r, buf); err != nil {
+	if _, err = io.ReadFull(r.r, buf[:len(name)]); err != nil {
 		return err
 	}
 
-	if !bytes.HasPrefix(buf, []byte(name)) {
-		return ErrInvalidRequest
+	if !bytes.EqualFold(buf[:len(name)], []byte(name)) {
+		return nestError(ErrMalformedTrailer, "expected the %s trailer", name[:len(name)-1])
+	}
+	if _, err = io.ReadFull(r.r, buf[len(name):]); err != nil {
+		return err
 	}
 
 	if err = r.integrity.setEncoded(r.trailingSumAlgo, buf[len(name):len(buf)-1]); err != nil {
@@ -262,7 +272,7 @@ func (r *v4Reader) readChunkTrailer(buf []byte) error {
 			return err
 		}
 	default:
-		return ErrInvalidRequest
+		return nestError(ErrMalformedTrailer, "the trailer is not terminated by a line break")
 	}
 
 	if !r.unsigned {
@@ -317,7 +327,10 @@ func (r *v4Reader) close(buf []byte) error {
 	if !r.trailingHeader || !r.unsigned {
 		if err := r.consumeCRLF(buf); err != nil {
 			if errors.Is(err, io.EOF) {
-				return io.ErrUnexpectedEOF
+				err = io.ErrUnexpectedEOF
+			}
+			if r.trailingHeader {
+				return nestError(ErrMalformedTrailer, "the trailer is not terminated by a blank line: %w", err)
 			}
 			return err
 		}
@@ -487,36 +500,35 @@ func (vr *V4VerifiedRequest[T]) PostForm() PostForm {
 	return vr.form
 }
 
-func (vr *V4VerifiedRequest[T]) addAlgorithm(algorithm ChecksumAlgorithm) error {
-	if slices.Contains(vr.algorithms, algorithm) {
-		return errors.New("algorithm already added")
-	}
-	vr.algorithms = append(vr.algorithms, algorithm)
-	return nil
-}
-
 func (vr *V4VerifiedRequest[T]) requestChecksum(req ChecksumRequest) error {
 	if !req.valid() {
 		return fmt.Errorf("uninitialized request")
 	}
-	switch req.trailing {
-	case true:
+	if slices.Contains(vr.algorithms, req.algorithm) {
+		// Content-MD5 and X-Amz-Checksum-Md5 may both carry the same digest.
+		if expected, ok := vr.integrity[req.algorithm]; ok && !req.trailing {
+			if !bytes.Equal(expected, req.value) {
+				return nestError(ErrBadDigest, "conflicting %s checksums were provided", req.algorithm)
+			}
+			return nil
+		}
+		return nestError(ErrInvalidChecksumRequest, "%s was requested more than once", req.algorithm)
+	}
+	if req.trailing {
 		if !vr.data.options.trailer {
-			return fmt.Errorf("could not set %s as trailing: not expecting a trailing header", req.algorithm)
+			return nestError(ErrInvalidChecksumRequest, "could not set %s as trailing: not expecting a trailing header", req.algorithm)
 		}
 		if vr.trailingSumAlgo != nil {
-			return fmt.Errorf("could not set %s as trailing: already set to %s", req.algorithm, *vr.trailingSumAlgo)
+			return nestError(ErrInvalidChecksumRequest, "could not set %s as trailing: already set to %s", req.algorithm, *vr.trailingSumAlgo)
+		}
+		if req.algorithm != vr.data.options.trailerAlgo {
+			return nestError(ErrInvalidChecksumRequest, "could not set %s as trailing: %s names %s", req.algorithm, headerXAmzTrailer, vr.data.options.trailerAlgo)
 		}
 		vr.trailingSumAlgo = &req.algorithm
-		fallthrough
-	default:
-		if err := vr.addAlgorithm(req.algorithm); err != nil {
-			return fmt.Errorf("could not add %s: %w", req.algorithm, err)
-		}
-		if !req.trailing {
-			vr.integrity.setDecoded(req.algorithm, req.value)
-		}
+	} else {
+		vr.integrity.setDecoded(req.algorithm, req.value)
 	}
+	vr.algorithms = append(vr.algorithms, req.algorithm)
 	return nil
 }
 
@@ -551,8 +563,10 @@ func (vr *V4VerifiedRequest[T]) Reader(reqs ...ChecksumRequest) (Reader, error) 
 		return nil, err
 	}
 	if vr.data.options.trailer && vr.trailingSumAlgo == nil {
-		restore()
-		return nil, errors.New("the trailing checksum algorithm must be specified when the request contains a trailing header")
+		if err := vr.requestChecksum(ChecksumRequest{trailing: true, algorithm: vr.data.options.trailerAlgo}); err != nil {
+			restore()
+			return nil, err
+		}
 	}
 
 	var (
@@ -933,6 +947,7 @@ type parsedXAmzContentSHA256 struct {
 	streaming            bool
 	signingAlgo          v4SigningAlgorithm
 	trailer              bool
+	trailerAlgo          ChecksumAlgorithm
 	decodedContentLength int64
 
 	sumRequest ChecksumRequest
@@ -1020,6 +1035,32 @@ func (v4 *V4[T]) parseXAmzContentSHA256(rawXAmzContentSHA256 string, headers htt
 	return parsedXAmzContentSHA256{
 		sumRequest: sumRequest,
 	}, nil
+}
+
+// parseTrailer requires X-Amz-Trailer exactly when the payload has a trailer
+// and records the checksum algorithm it names.
+func (o *parsedXAmzContentSHA256) parseTrailer(values []string) error {
+	if !o.trailer {
+		if len(values) > 0 {
+			return nestError(ErrInvalidRequest, "the %s header requires a payload with a trailer", headerXAmzTrailer)
+		}
+		return nil
+	}
+	if len(values) == 0 {
+		return nestError(ErrMalformedTrailer, "the %s header is missing", headerXAmzTrailer)
+	}
+	if len(values) == 1 {
+		name := strings.ToLower(strings.TrimSpace(values[0]))
+		if name, ok := strings.CutPrefix(name, chunkTrailingHeaderPrefix); ok {
+			for a := AlgorithmCRC32; a < algorithmHashedPayload; a++ {
+				if a.String() == name {
+					o.trailerAlgo = a
+					return nil
+				}
+			}
+		}
+	}
+	return nestError(ErrInvalidRequest, "the value specified in the %s header is not supported", headerXAmzTrailer)
 }
 
 func (v4 *V4[T]) parsePresignedXAmzContentSHA256(rawXAmzContentSHA256 string) parsedXAmzContentSHA256 {
@@ -1215,6 +1256,9 @@ func (v4 *V4[T]) verify(r *http.Request, query url.Values) (v4VerifiedData[T], e
 	if err != nil {
 		return v4VerifiedData[T]{}, err
 	}
+	if err = options.parseTrailer(r.Header.Values(headerXAmzTrailer)); err != nil {
+		return v4VerifiedData[T]{}, err
+	}
 
 	secretAccessKey, data, err := v4.provider.Provide(r.Context(), authorization.credential.accessKeyID)
 	if err != nil {
@@ -1286,6 +1330,9 @@ func (v4 *V4[T]) verifyPresigned(r *http.Request, query url.Values) (v4VerifiedD
 		rawXAmzContentSHA256 = unsignedPayload
 	}
 	options := v4.parsePresignedXAmzContentSHA256(rawXAmzContentSHA256)
+	if err = options.parseTrailer(r.Header.Values(headerXAmzTrailer)); err != nil {
+		return v4VerifiedData[T]{}, err
+	}
 
 	query.Del(queryXAmzSignature)
 	canonicalRequestHash := v4.canonicalRequestHash(r, query, authorization.signedHeaders, rawXAmzContentSHA256)

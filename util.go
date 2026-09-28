@@ -31,6 +31,8 @@ var (
 	ErrInvalidAccessKeyID = errors.New("the AWS access key ID that you provided does not exist in our records")
 	// ErrInvalidArgument indicates the InvalidArgument error code.
 	ErrInvalidArgument = errors.New("invalid argument")
+	// ErrInvalidChecksumRequest indicates that the requested checksums are inconsistent with the request's payload.
+	ErrInvalidChecksumRequest = errors.New("the requested checksums are inconsistent with the request payload")
 	// ErrInvalidDateHeader indicates that the Date or X-Amz-Date header is not valid.
 	ErrInvalidDateHeader = errors.New("AWS authentication requires a valid Date or x-amz-date header")
 	// ErrInvalidDigest indicates the InvalidDigest error code.
@@ -54,6 +56,8 @@ var (
 	ErrInvalidXAmzDecodedContentLength = errors.New("the x-amz-decoded-content-length header does not contain a valid integer")
 	// ErrMalformedPOSTRequest indicates that a POST request is malformed.
 	ErrMalformedPOSTRequest = errors.New("unable to parse multipart form data")
+	// ErrMalformedTrailer indicates the MalformedTrailerError error code.
+	ErrMalformedTrailer = errors.New("the request contained trailing data that was not well-formed")
 	// ErrMissingContentLength indicates the MissingContentLength error code.
 	ErrMissingContentLength = errors.New("you must provide the Content-Length HTTP header")
 	// ErrMissingPOSTFile indicates that a POST request is missing a required file upload.
@@ -244,9 +248,11 @@ type (
 		PostForm() PostForm
 		// Reader returns a Reader to read the body of the verified
 		// request. Reader can be called multiple times, but only the
-		// first call can request checksums. Checksum requests must have
-		// distinct algorithms. If the request includes a trailing
-		// checksum header, at least one checksum must be requested.
+		// first call can request checksums. Requests for the same
+		// algorithm must carry the same value. If the request includes a
+		// trailing checksum, it is verified using the algorithm named by
+		// X-Amz-Trailer; a trailing checksum request, if given, must name
+		// the same algorithm.
 		Reader(...ChecksumRequest) (Reader, error)
 	}
 )

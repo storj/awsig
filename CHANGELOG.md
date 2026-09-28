@@ -40,4 +40,20 @@
   lengths, support small read buffers, and retain verification errors on
   subsequent reads. Checksum setup can be retried after an unsuccessful `Reader`
   call; checksum values must have the correct decoded length.
+- SigV4 requires `X-Amz-Trailer` exactly when `X-Amz-Content-Sha256` names a
+  `*-TRAILER` payload, and uses the algorithm it names as the trailing checksum,
+  so callers no longer need to request one. A missing header, or a trailer that
+  does not match it or is truncated, fails with the new `ErrMalformedTrailer`;
+  truncated trailers also match `io.ErrUnexpectedEOF`. An unsupported or
+  unexpected header, including any `X-Amz-Trailer` on a presigned request, fails
+  with `ErrInvalidRequest`. Trailer names are matched case-insensitively. Checksum requests inconsistent with the payload (a trailing
+  request without a trailer, a second trailing request, or one naming a
+  different algorithm than `X-Amz-Trailer`) fail with the new
+  `ErrInvalidChecksumRequest`. Requesting the same algorithm twice with the same
+  value, such as Content-MD5 together with `X-Amz-Checksum-Md5`, is allowed;
+  conflicting values fail with `ErrBadDigest`.
 
+### Test server
+
+- Malformed checksum trailers return HTTP 400 with `MalformedTrailerError`.
+  Invalid requests and checksum requests return HTTP 400 with `InvalidRequest`.
