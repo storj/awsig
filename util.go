@@ -450,10 +450,15 @@ func parseMultipartFormUntilFile(r io.Reader, boundary string) (io.ReadCloser, P
 }
 
 // parseRequestQuery rejects partial query parses before authentication can ignore pairs.
+// Like S3, it splits pairs only on '&' and treats ';' as part of a key or value.
+// It rewrites r.URL.RawQuery so r.URL.Query() sees the same pairs that were verified;
+// otherwise net/url would drop pairs containing ';' after authentication.
 func parseRequestQuery(r *http.Request) (url.Values, error) {
-	query, err := url.ParseQuery(r.URL.RawQuery)
+	rawQuery := strings.ReplaceAll(r.URL.RawQuery, ";", "%3B")
+	query, err := url.ParseQuery(rawQuery)
 	if err != nil {
 		return nil, nestError(ErrInvalidRequest, "parse request query: %w", err)
 	}
+	r.URL.RawQuery = rawQuery
 	return query, nil
 }

@@ -35,7 +35,9 @@
   name is now matched case-insensitively.
 - Malformed query strings fail with `ErrInvalidRequest` before authentication or
   multipart parsing in all public verifiers, rather than authenticating a
-  partially parsed query.
+  partially parsed query. As in S3, query pairs are split only on `&`; a raw
+  `;` is part of the key or value and is signed as `%3B`. Verifiers rewrite
+  `r.URL.RawQuery` accordingly, so `r.URL.Query()` returns the verified pairs.
 - SigV4 streaming readers reject malformed or incomplete framing and invalid
   lengths, support small read buffers, and retain verification errors on
   subsequent reads. Checksum setup can be retried after an unsuccessful `Reader`
