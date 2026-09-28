@@ -52,8 +52,21 @@
   `ErrInvalidChecksumRequest`. Requesting the same algorithm twice with the same
   value, such as Content-MD5 together with `X-Amz-Checksum-Md5`, is allowed;
   conflicting values fail with `ErrBadDigest`.
+- Non-final SigV4 streaming chunks must be at least 8192 bytes (previously
+  8000). Smaller chunks fail with the new `ErrInvalidChunkSize`, which also
+  matches `ErrEntityTooSmall`.
+- SigV4 requests with an unsigned `x-amz-*` or Content-MD5 header fail with the
+  new `ErrUnsignedHeader` instead of `ErrMissingSecurityHeader`; AWS reports
+  this as AccessDenied.
+- Malformed `X-Amz-Credential` and `X-Amz-SignedHeaders` query parameters in
+  presigned SigV4 requests fail with the new
+  `ErrAuthorizationQueryParametersError` instead of
+  `ErrAuthorizationHeaderMalformed`.
 
 ### Test server
 
 - Malformed checksum trailers return HTTP 400 with `MalformedTrailerError`.
   Invalid requests and checksum requests return HTTP 400 with `InvalidRequest`.
+- Unsigned headers return HTTP 403 with `AccessDenied`. Undersized chunks and
+  malformed presigned query parameters return HTTP 400 with
+  `InvalidChunkSizeError` and `AuthorizationQueryParametersError`.
