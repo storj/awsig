@@ -384,6 +384,13 @@ func (v2 *V2[T]) calculatePostSignature(data, key string) signatureV2 {
 }
 
 func (v2 *V2[T]) verifyPost(ctx context.Context, form PostForm) (v2VerifiedData[T], error) {
+	if !form.Has(querySignature) {
+		return v2VerifiedData[T]{}, nestError(
+			ErrInvalidArgument,
+			"Bucket POST must contain a field named '%s'", querySignature,
+		)
+	}
+
 	signature, err := newSignatureV2FromEncoded(form.Get(querySignature).Value)
 	if err != nil {
 		return v2VerifiedData[T]{}, nestError(

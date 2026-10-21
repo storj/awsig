@@ -8,6 +8,8 @@
   are signed as `/bucket/`, for compatibility with existing clients, or as
   `/bucket`, like botocore signs them and S3 accepts. Object paths and
   virtual-hosted requests are unchanged.
+- A SigV2 POST without a `Signature` field fails with `ErrInvalidArgument`
+  instead of `ErrSignatureDoesNotMatch`, like S3.
 - SigV2 signs decoded subresource and `response-*` query values using the
   botocore 1.40.0 subresource list, including `storageClass`, `defaultObjectAcl`,
   `tagging`, `cors`, `restore`, and `object-lock`. Known operation selectors

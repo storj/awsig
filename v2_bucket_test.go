@@ -1,6 +1,7 @@
 package awsig
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -51,5 +52,16 @@ func TestV2BucketPath(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+func TestV2PostMissingSignature(t *testing.T) {
+	v2 := NewV2[exampleAuthData](simpleCredentialsProvider{accessKeyID: "key", secretAccessKey: "secret"})
+	form := PostForm{
+		queryAWSAccessKeyId: {{Value: "key"}},
+		formNamePolicy:      {{Value: "e30="}},
+	}
+	if _, err := v2.verifyPost(t.Context(), form); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("expected ErrInvalidArgument, got %v", err)
 	}
 }
