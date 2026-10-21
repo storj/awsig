@@ -278,7 +278,30 @@ func (v2 *V2[T]) parseAuthorization(rawAuthorization string) (v2ParsedAuthorizat
 	}, nil
 }
 
+// signatureMatches reports whether signature is the signature of r. A path-style bucket-only
+// request sent to /bucket matches whether it's signed as /bucket/ or, like S3 accepts, /bucket.
+func (v2 *V2[T]) signatureMatches(r *http.Request, query url.Values, dateElement, virtualHostedBucket, key string, signature signatureV2) bool {
+	if v2.calculateSignature(r, query, dateElement, virtualHostedBucket, key).compare(signature) {
+		return true
+	}
+	return isPathStyleBucketOnly(r, virtualHostedBucket) &&
+		v2.calculateSignatureWithSlash(r, query, dateElement, virtualHostedBucket, key, false).compare(signature)
+}
+
+// isPathStyleBucketOnly reports whether r is a path-style request for /bucket, without a trailing
+// slash.
+func isPathStyleBucketOnly(r *http.Request, virtualHostedBucket string) bool {
+	path := strings.TrimPrefix(r.URL.Path, "/")
+	return virtualHostedBucket == "" && path != "" && !strings.Contains(path, "/")
+}
+
 func (v2 *V2[T]) calculateSignature(r *http.Request, query url.Values, dateElement, virtualHostedBucket, key string) signatureV2 {
+	return v2.calculateSignatureWithSlash(r, query, dateElement, virtualHostedBucket, key, true)
+}
+
+// calculateSignatureWithSlash calculates the signature of r. If bucketSlash is true, a path-style
+// bucket-only request sent to /bucket is signed as /bucket/.
+func (v2 *V2[T]) calculateSignatureWithSlash(r *http.Request, query url.Values, dateElement, virtualHostedBucket, key string, bucketSlash bool) signatureV2 {
 	b := newHashBuilder(func() hash.Hash { return hmac.New(sha1.New, []byte(key)) })
 
 	b.WriteString(r.Method)
@@ -318,14 +341,11 @@ func (v2 *V2[T]) calculateSignature(r *http.Request, query url.Values, dateEleme
 	// might contain an invalid encoding the software down the chain
 	// might use long after we've authenticated this request.
 	b.WriteString(r.URL.EscapedPath())
-	if virtualHostedBucket == "" {
-		path := strings.TrimPrefix(r.URL.Path, "/")
-		if path != "" && !strings.Contains(path, "/") {
-			// Preserve compatibility with clients that send /bucket but sign
-			// /bucket/. Only path-style bucket-only requests get this suffix;
-			// object paths and virtual-hosted requests must remain unchanged.
-			b.WriteByte('/')
-		}
+	if bucketSlash && isPathStyleBucketOnly(r, virtualHostedBucket) {
+		// Preserve compatibility with clients that send /bucket but sign
+		// /bucket/. Only path-style bucket-only requests get this suffix;
+		// object paths and virtual-hosted requests must remain unchanged.
+		b.WriteByte('/')
 	}
 
 	if len(query) > 0 {
@@ -418,9 +438,7 @@ func (v2 *V2[T]) verify(r *http.Request, query url.Values, virtualHostedBucket s
 		return v2VerifiedData[T]{}, err
 	}
 
-	signature := v2.calculateSignature(r, query, headerDateValue, virtualHostedBucket, secretAccessKey)
-
-	if !signature.compare(authorization.signature) {
+	if !v2.signatureMatches(r, query, headerDateValue, virtualHostedBucket, secretAccessKey, authorization.signature) {
 		return v2VerifiedData[T]{}, ErrSignatureDoesNotMatch
 	}
 
@@ -518,7 +536,7 @@ func (v2 *V2[T]) verifyPresigned(r *http.Request, query url.Values, virtualHoste
 		return v2VerifiedData[T]{}, err
 	}
 
-	if !v2.calculateSignature(r, query, rawExpires, virtualHostedBucket, secretAccessKey).compare(signature) {
+	if !v2.signatureMatches(r, query, rawExpires, virtualHostedBucket, secretAccessKey, signature) {
 		return v2VerifiedData[T]{}, ErrSignatureDoesNotMatch
 	}
 

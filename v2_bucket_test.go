@@ -15,6 +15,7 @@ func TestV2BucketPath(t *testing.T) {
 	now := dummyNow(2026, time.September, 23, 0, 0, 0)
 	for _, tc := range []struct{ path, bucket, canonical string }{
 		{"/bucket", "", "/bucket/"},
+		{"/bucket", "", "/bucket"},
 		{"/bucket/", "", "/bucket/"},
 		{"/bucket/key", "", "/bucket/key"},
 		{"/", "", "/"},

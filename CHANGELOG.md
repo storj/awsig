@@ -4,9 +4,10 @@
 
 ### Compatibility
 
-- SigV2 retains legacy path-style bucket-only canonicalization: requests sent
-  to `/bucket` are signed as `/bucket/` for compatibility with existing clients.
-  Object paths and virtual-hosted requests are unchanged.
+- SigV2 accepts path-style bucket-only requests sent to `/bucket` whether they
+  are signed as `/bucket/`, for compatibility with existing clients, or as
+  `/bucket`, like botocore signs them and S3 accepts. Object paths and
+  virtual-hosted requests are unchanged.
 - SigV2 signs decoded subresource and `response-*` query values using the
   botocore 1.40.0 subresource list, including `storageClass`, `defaultObjectAcl`,
   `tagging`, `cors`, `restore`, and `object-lock`. Known operation selectors
