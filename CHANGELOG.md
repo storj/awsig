@@ -90,3 +90,7 @@
 - Unsigned headers return HTTP 403 with `AccessDenied`. Undersized chunks and
   malformed presigned query parameters return HTTP 400 with
   `InvalidChunkSizeError` and `AuthorizationQueryParametersError`.
+- Requests are safe to serve concurrently. Requests to a missing bucket return
+  HTTP 404 with `NoSuchBucket`; creating an existing or invalidly named bucket
+  returns `BucketAlreadyOwnedByYou`, `BucketAlreadyExists` or
+  `InvalidBucketName`. PutObject replaces an object with the same name.

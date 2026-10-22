@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -167,4 +168,62 @@ func TestDeleteObjectsVerifiesCRC32(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBuckets(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	svc := newServer(log, &credentialsDB{log: log, entries: map[string]credentialsData{
+		"key":   {accessKeyID: "key", secretAccessKey: "secret"},
+		"other": {accessKeyID: "other", secretAccessKey: "secret"},
+	}})
+	do := func(key, method, path string) (int, string) {
+		r := httptest.NewRequest(method, "http://localhost"+path, nil)
+		date := time.Now().UTC().Format(http.TimeFormat)
+		r.Header.Set("Date", date)
+		// Only the first query parameter is a signed subresource.
+		resource, _, _ := strings.Cut(path, "&")
+		mac := hmac.New(sha1.New, []byte("secret"))
+		mac.Write([]byte(method + "\n\n\n" + date + "\n" + resource))
+		r.Header.Set("Authorization", "AWS "+key+":"+base64.StdEncoding.EncodeToString(mac.Sum(nil)))
+		rr := httptest.NewRecorder()
+		svc.ServeHTTP(rr, r)
+		return rr.Code, rr.Body.String()
+	}
+	for _, tc := range []struct {
+		key, method, path string
+		status            int
+		code              string
+	}{
+		{"key", "PUT", "/Bad_Name", http.StatusBadRequest, "InvalidBucketName"},
+		{"key", "PUT", "/192.168.1.1", http.StatusBadRequest, "InvalidBucketName"},
+		{"key", "PUT", "/bucket", http.StatusOK, ""},
+		{"key", "PUT", "/bucket", http.StatusConflict, "BucketAlreadyOwnedByYou"},
+		{"other", "PUT", "/bucket", http.StatusConflict, "BucketAlreadyExists"},
+		{"key", "PUT", "/missing/object", http.StatusNotFound, "NoSuchBucket"},
+		{"key", "GET", "/missing?versions&max-keys=1000", http.StatusNotFound, "NoSuchBucket"},
+		{"key", "DELETE", "/missing", http.StatusNotFound, "NoSuchBucket"},
+		{"key", "PUT", "/bucket/object", http.StatusOK, ""},
+		{"key", "PUT", "/bucket/object", http.StatusOK, ""},
+		{"key", "DELETE", "/bucket", http.StatusConflict, "BucketNotEmpty"},
+	} {
+		status, body := do(tc.key, tc.method, tc.path)
+		if status != tc.status || !strings.Contains(body, "<Code>"+tc.code+"</Code>") && tc.code != "" {
+			t.Fatalf("%s %s %s: got %d %s, want %d %s", tc.key, tc.method, tc.path, status, body, tc.status, tc.code)
+		}
+	}
+	if n := len(svc.data["bucket"].objects); n != 1 {
+		t.Fatalf("got %d objects after overwriting, want 1", n)
+	}
+
+	// Concurrent requests are safe; run with -race.
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Go(func() {
+			if status, body := do("key", "PUT", fmt.Sprintf("/bucket/object%d", i)); status != http.StatusOK {
+				t.Errorf("got %d %s", status, body)
+			}
+			do("key", "GET", "/")
+		})
+	}
+	wg.Wait()
 }

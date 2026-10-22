@@ -12,11 +12,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/amwolff/awsig"
@@ -107,6 +109,7 @@ type object struct {
 
 type bucket struct {
 	name    string
+	owner   string
 	created time.Time
 	objects []object
 }
@@ -122,9 +125,8 @@ type service struct {
 
 	vhost string
 
-	// TODO(amwolff): it would be worth fixing thread safety; but for
-	// Python-based ceph/s3-tests it's not needed.
-	data map[string]bucket
+	mu   sync.Mutex
+	data map[string]bucket // guarded by mu
 }
 
 func newServer(log *slog.Logger, db *credentialsDB) *service {
@@ -195,12 +197,14 @@ func (s *service) listBuckets(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
+	s.mu.Lock()
 	for _, bucket := range s.data {
 		result.Buckets.Bucket = append(result.Buckets.Bucket, listAllMyBucketsResultBucket{
 			CreationDate: bucket.created.UTC().Format("2006-01-02T15:04:05+00:00"),
 			Name:         bucket.name,
 		})
 	}
+	s.mu.Unlock()
 	slices.SortFunc(result.Buckets.Bucket, func(a, b listAllMyBucketsResultBucket) int {
 		return strings.Compare(a.Name, b.Name)
 	})
@@ -254,11 +258,6 @@ func (s *service) listObjectVersions(w http.ResponseWriter, r *http.Request) {
 		xmlHTTPError(ctx, log, w, http.StatusBadRequest, "InvalidArgument", "max-keys cannot be negative")
 		return
 	}
-	if maxKeys < len(s.data[bckt].objects) {
-		xmlHTTPErrorNotImplemented(ctx, log, w)
-		return
-	}
-
 	vr, err := s.v2v4.Verify(r, s.vhost)
 	if err != nil {
 		log.WarnContext(ctx, "failed to verify request", "error", err)
@@ -298,8 +297,20 @@ func (s *service) listObjectVersions(w http.ResponseWriter, r *http.Request) {
 		IsTruncated:  false,
 	}
 
-	// TODO(amwolff): validate bucket exists
-	for _, o := range s.data[bckt].objects {
+	s.mu.Lock()
+	bucket, ok := s.data[bckt]
+	objects := slices.Clone(bucket.objects)
+	s.mu.Unlock()
+	if !ok {
+		xmlHTTPErrorNoSuchBucket(ctx, log, w)
+		return
+	}
+	if maxKeys < len(objects) {
+		xmlHTTPErrorNotImplemented(ctx, log, w)
+		return
+	}
+
+	for _, o := range objects {
 		result.Version = append(result.Version, listVersionsResultVersion{
 			Key:          o.name,
 			VersionID:    "null",
@@ -356,10 +367,28 @@ func (s *service) createBucket(w http.ResponseWriter, r *http.Request) {
 
 	log.DebugContext(ctx, "body should be a valid XML", "body", string(b))
 
-	// TODO(amwolff): validate bucket does not exist + name rules
-	s.data[bckt] = bucket{
-		name:    bckt,
-		created: time.Now(),
+	if !validBucketName(bckt) {
+		xmlHTTPError(ctx, log, w, http.StatusBadRequest, "InvalidBucketName", "The specified bucket is not valid.")
+		return
+	}
+
+	s.mu.Lock()
+	existing, exists := s.data[bckt]
+	if !exists {
+		s.data[bckt] = bucket{
+			name:    bckt,
+			owner:   vr.AuthData().accessKeyID,
+			created: time.Now(),
+		}
+	}
+	s.mu.Unlock()
+	if exists {
+		if existing.owner == vr.AuthData().accessKeyID {
+			xmlHTTPError(ctx, log, w, http.StatusConflict, "BucketAlreadyOwnedByYou", "Your previous request to create the named bucket succeeded and you already own it.")
+		} else {
+			xmlHTTPError(ctx, log, w, http.StatusConflict, "BucketAlreadyExists", "The requested bucket name is not available. The bucket namespace is shared by all users of the system. Please select a different name and try again.")
+		}
+		return
 	}
 
 	log.InfoContext(ctx, "created bucket")
@@ -493,14 +522,23 @@ func (s *service) createObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO(amwolff): validate bucket exists
-	bucket := s.data[bckt]
-	bucket.objects = append(bucket.objects, object{
-		name:    name,
-		created: time.Now(),
-		data:    b,
-	})
-	s.data[bckt] = bucket
+	s.mu.Lock()
+	bucket, ok := s.data[bckt]
+	if ok {
+		// A new object replaces an existing one with the same name.
+		bucket.objects = slices.DeleteFunc(bucket.objects, func(o object) bool { return o.name == name })
+		bucket.objects = append(bucket.objects, object{
+			name:    name,
+			created: time.Now(),
+			data:    b,
+		})
+		s.data[bckt] = bucket
+	}
+	s.mu.Unlock()
+	if !ok {
+		xmlHTTPErrorNoSuchBucket(ctx, log, w)
+		return
+	}
 
 	log.InfoContext(ctx, "stored object", "size", len(b))
 }
@@ -584,12 +622,19 @@ func (s *service) deleteObjects(w http.ResponseWriter, r *http.Request) {
 		deletable = append(deletable, o.Key)
 	}
 
-	// TODO(amwolff): validate bucket exists
-	bucket := s.data[bckt]
-	bucket.objects = slices.DeleteFunc(s.data[bckt].objects, func(o object) bool {
-		return slices.Contains(deletable, o.name)
-	})
-	s.data[bckt] = bucket
+	s.mu.Lock()
+	bucket, ok := s.data[bckt]
+	if ok {
+		bucket.objects = slices.DeleteFunc(bucket.objects, func(o object) bool {
+			return slices.Contains(deletable, o.name)
+		})
+		s.data[bckt] = bucket
+	}
+	s.mu.Unlock()
+	if !ok {
+		xmlHTTPErrorNoSuchBucket(ctx, log, w)
+		return
+	}
 
 	// no response body for Quiet mode…?
 	log.InfoContext(ctx, "deleted objects", "count", len(request.Object))
@@ -615,14 +660,21 @@ func (s *service) deleteBucket(w http.ResponseWriter, r *http.Request) {
 	}
 	log = log.With("Access Key ID", vr.AuthData().accessKeyID)
 
-	// TODO(amwolff): validate bucket exists
-	if len(s.data[bckt].objects) > 0 {
-		log.WarnContext(ctx, "bucket not empty", "objects", len(s.data[bckt].objects))
+	s.mu.Lock()
+	bucket, ok := s.data[bckt]
+	if ok && len(bucket.objects) == 0 {
+		delete(s.data, bckt)
+	}
+	s.mu.Unlock()
+	if !ok {
+		xmlHTTPErrorNoSuchBucket(ctx, log, w)
+		return
+	}
+	if len(bucket.objects) > 0 {
+		log.WarnContext(ctx, "bucket not empty", "objects", len(bucket.objects))
 		xmlHTTPError(ctx, log, w, http.StatusConflict, "BucketNotEmpty", "The bucket you tried to delete is not empty")
 		return
 	}
-
-	delete(s.data, bckt)
 
 	w.WriteHeader(http.StatusNoContent)
 	log.InfoContext(ctx, "deleted bucket")
@@ -706,6 +758,28 @@ func awsigErrorToHTTPError(ctx context.Context, log *slog.Logger, w http.Respons
 	default:
 		xmlHTTPError(ctx, log, w, http.StatusInternalServerError, "InternalError", "An internal error occurred. Try again.")
 	}
+}
+
+func xmlHTTPErrorNoSuchBucket(ctx context.Context, log *slog.Logger, w http.ResponseWriter) {
+	log.WarnContext(ctx, "bucket does not exist")
+	xmlHTTPError(ctx, log, w, http.StatusNotFound, "NoSuchBucket", "The specified bucket does not exist")
+}
+
+// validBucketName reports whether name follows the S3 general purpose bucket naming rules: 3 to
+// 63 lowercase letters, digits, dots and hyphens, starting and ending with a letter or digit,
+// without adjacent dots, and not formatted as an IP address.
+func validBucketName(name string) bool {
+	if len(name) < 3 || len(name) > 63 || strings.Contains(name, "..") || net.ParseIP(name) != nil {
+		return false
+	}
+	for i := range len(name) {
+		c := name[i]
+		alnum := c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
+		if !alnum && (i == 0 || i == len(name)-1 || c != '.' && c != '-') {
+			return false
+		}
+	}
+	return true
 }
 
 func xmlHTTPErrorNotImplemented(ctx context.Context, log *slog.Logger, w http.ResponseWriter) {
