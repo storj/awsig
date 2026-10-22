@@ -94,3 +94,6 @@
   HTTP 404 with `NoSuchBucket`; creating an existing or invalidly named bucket
   returns `BucketAlreadyOwnedByYou`, `BucketAlreadyExists` or
   `InvalidBucketName`. PutObject replaces an object with the same name.
+- Every awsig error maps to its S3 error response; previously unlisted ones,
+  such as `SignatureDoesNotMatch` and `InvalidAccessKeyId`, returned HTTP 500
+  with `InternalError`.

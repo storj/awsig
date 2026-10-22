@@ -735,29 +735,62 @@ func xmlHTTPError(ctx context.Context, log *slog.Logger, w http.ResponseWriter, 
 	}
 }
 
+// awsigErrorResponses maps awsig errors to S3 error responses. awsig nests some errors in
+// others, such as ErrInvalidChunkSize in ErrEntityTooSmall and ErrMessageTooLarge in
+// ErrMalformedPOSTRequest, so the more specific errors come first.
+var awsigErrorResponses = []struct {
+	err     error
+	status  int
+	code    string
+	message string
+}{
+	{awsig.ErrInvalidChunkSize, http.StatusBadRequest, "InvalidChunkSizeError", "Only the last chunk is allowed to have a size less than 8192 bytes."},
+	{awsig.ErrMessageTooLarge, http.StatusBadRequest, "MaxPostPreDataLengthExceededError", "Your POST request fields preceding the upload file were too large."},
+	{awsig.ErrMissingPOSTFile, http.StatusBadRequest, "InvalidArgument", "POST requires exactly one file upload per request."},
+	{awsig.ErrMalformedTrailer, http.StatusBadRequest, "MalformedTrailerError", "The request contained trailing data that was not well-formed or did not conform to our published schema."},
+	{awsig.ErrAccessDenied, http.StatusForbidden, "AccessDenied", "Access Denied"},
+	{awsig.ErrAuthorizationHeaderMalformed, http.StatusBadRequest, "AuthorizationHeaderMalformed", "The authorization header that you provided is not valid."},
+	{awsig.ErrAuthorizationQueryParametersError, http.StatusBadRequest, "AuthorizationQueryParametersError", "The authorization query parameters are not valid."},
+	{awsig.ErrBadDigest, http.StatusBadRequest, "BadDigest", "The Content-MD5 or checksum value that you specified did not match what the server received."},
+	{awsig.ErrContentLengthWithTransferEncoding, http.StatusBadRequest, "InvalidRequest", "Cannot specify both Content-Length and Transfer-Encoding HTTP headers."},
+	{awsig.ErrEntityTooLarge, http.StatusBadRequest, "EntityTooLarge", "Your proposed upload exceeds the maximum allowed object size."},
+	{awsig.ErrEntityTooSmall, http.StatusBadRequest, "EntityTooSmall", "Your proposed upload is smaller than the minimum allowed object size."},
+	{awsig.ErrInvalidAccessKeyID, http.StatusForbidden, "InvalidAccessKeyId", "The AWS access key ID that you provided does not exist in our records."},
+	{awsig.ErrInvalidArgument, http.StatusBadRequest, "InvalidArgument", "Invalid Argument"},
+	{awsig.ErrInvalidChecksumRequest, http.StatusBadRequest, "InvalidRequest", "The request is invalid."},
+	{awsig.ErrInvalidDateHeader, http.StatusForbidden, "AccessDenied", "AWS authentication requires a valid Date or x-amz-date header"},
+	{awsig.ErrInvalidDigest, http.StatusBadRequest, "InvalidDigest", "The Content-MD5 or checksum value that you specified is not valid."},
+	{awsig.ErrInvalidPOSTDate, http.StatusBadRequest, "InvalidRequest", "X-Amz-Date must be formatted via ISO8601 Long format."},
+	{awsig.ErrInvalidPresignedDate, http.StatusBadRequest, "AuthorizationQueryParametersError", "X-Amz-Date must be in the ISO8601 Long Format \"yyyyMMdd'T'HHmmss'Z'\""},
+	{awsig.ErrInvalidPresignedExpiration, http.StatusBadRequest, "AuthorizationQueryParametersError", "X-Amz-Expires should be a number"},
+	{awsig.ErrInvalidPresignedXAmzContentSHA256, http.StatusBadRequest, "XAmzContentSHA256Mismatch", "The provided 'x-amz-content-sha256' header does not match what was computed."},
+	{awsig.ErrInvalidRequest, http.StatusBadRequest, "InvalidRequest", "The request is invalid."},
+	{awsig.ErrInvalidSignature, http.StatusForbidden, "SignatureDoesNotMatch", "The request signature we calculated does not match the signature you provided. Check your key and signing method."},
+	{awsig.ErrInvalidXAmzContentSHA256, http.StatusBadRequest, "InvalidArgument", "x-amz-content-sha256 must be UNSIGNED-PAYLOAD, STREAMING-AWS4-HMAC-SHA256-PAYLOAD, or a valid sha256 value."},
+	{awsig.ErrInvalidXAmzDecodedContentLength, http.StatusLengthRequired, "MissingContentLength", "You must provide the Content-Length HTTP header."},
+	{awsig.ErrMalformedPOSTRequest, http.StatusBadRequest, "MalformedPOSTRequest", "The body of your POST request is not well-formed multipart/form-data."},
+	{awsig.ErrMissingContentLength, http.StatusLengthRequired, "MissingContentLength", "You must provide the Content-Length HTTP header."},
+	{awsig.ErrMissingPOSTPolicy, http.StatusBadRequest, "InvalidArgument", "Bucket POST must contain a field named 'policy'."},
+	{awsig.ErrMissingSecurityHeader, http.StatusBadRequest, "MissingSecurityHeader", "Your request is missing a required header."},
+	{awsig.ErrNegativePresignedExpiration, http.StatusBadRequest, "AuthorizationQueryParametersError", "X-Amz-Expires must be non-negative"},
+	{awsig.ErrNotImplemented, http.StatusNotImplemented, "NotImplemented", "A header that you provided implies functionality that is not implemented."},
+	{awsig.ErrPresignedExpirationTooLarge, http.StatusBadRequest, "AuthorizationQueryParametersError", "X-Amz-Expires must be less than a week (in seconds); that is, the given X-Amz-Expires must be less than 604800 seconds"},
+	{awsig.ErrRequestExpired, http.StatusForbidden, "AccessDenied", "Request has expired"},
+	{awsig.ErrRequestNotYetValid, http.StatusForbidden, "AccessDenied", "Request is not valid yet"},
+	{awsig.ErrRequestTimeTooSkewed, http.StatusForbidden, "RequestTimeTooSkewed", "The difference between the request time and the server's time is too large."},
+	{awsig.ErrSignatureDoesNotMatch, http.StatusForbidden, "SignatureDoesNotMatch", "The request signature we calculated does not match the signature you provided. Check your key and signing method."},
+	{awsig.ErrUnsignedHeader, http.StatusForbidden, "AccessDenied", "There were headers present in the request which were not signed"},
+	{awsig.ErrUnsupportedSignature, http.StatusBadRequest, "UnsupportedSignature", "The provided request is signed with an unsupported STS Token version or the signature version is not supported."},
+}
+
 func awsigErrorToHTTPError(ctx context.Context, log *slog.Logger, w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, awsig.ErrMalformedTrailer):
-		xmlHTTPError(ctx, log, w, http.StatusBadRequest, "MalformedTrailerError", "The request contained trailing data that was not well-formed or did not conform to our published schema.")
-	case errors.Is(err, awsig.ErrInvalidRequest), errors.Is(err, awsig.ErrInvalidChecksumRequest):
-		xmlHTTPError(ctx, log, w, http.StatusBadRequest, "InvalidRequest", "The request is invalid.")
-	case errors.Is(err, awsig.ErrMessageTooLarge):
-		xmlHTTPError(ctx, log, w, http.StatusBadRequest, "MaxPostPreDataLengthExceededError", "Your POST request fields preceding the upload file were too large.")
-	case errors.Is(err, awsig.ErrBadDigest):
-		xmlHTTPError(ctx, log, w, http.StatusBadRequest, "BadDigest", "The Content-MD5 or checksum value that you specified did not match what the server received.")
-	case errors.Is(err, awsig.ErrInvalidChunkSize):
-		xmlHTTPError(ctx, log, w, http.StatusBadRequest, "InvalidChunkSizeError", "Only the last chunk is allowed to have a size less than 8192 bytes.")
-	case errors.Is(err, awsig.ErrAuthorizationQueryParametersError):
-		xmlHTTPError(ctx, log, w, http.StatusBadRequest, "AuthorizationQueryParametersError", "The authorization query parameters are not valid.")
-	case errors.Is(err, awsig.ErrUnsignedHeader):
-		xmlHTTPError(ctx, log, w, http.StatusForbidden, "AccessDenied", "There were headers present in the request which were not signed")
-	case errors.Is(err, awsig.ErrInvalidDateHeader):
-		xmlHTTPError(ctx, log, w, http.StatusForbidden, "AccessDenied", "AWS authentication requires a valid Date or x-amz-date header")
-	case errors.Is(err, awsig.ErrRequestTimeTooSkewed):
-		xmlHTTPError(ctx, log, w, http.StatusForbidden, "RequestTimeTooSkewed", "The difference between the request time and the server's time is too large.")
-	default:
-		xmlHTTPError(ctx, log, w, http.StatusInternalServerError, "InternalError", "An internal error occurred. Try again.")
+	for _, r := range awsigErrorResponses {
+		if errors.Is(err, r.err) {
+			xmlHTTPError(ctx, log, w, r.status, r.code, r.message)
+			return
+		}
 	}
+	xmlHTTPError(ctx, log, w, http.StatusInternalServerError, "InternalError", "An internal error occurred. Try again.")
 }
 
 func xmlHTTPErrorNoSuchBucket(ctx context.Context, log *slog.Logger, w http.ResponseWriter) {

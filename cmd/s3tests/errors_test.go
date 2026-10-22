@@ -22,6 +22,11 @@ func TestAWSigErrorResponses(t *testing.T) {
 		{awsig.ErrInvalidRequest, "InvalidRequest", 400},
 		{awsig.ErrMessageTooLarge, "MaxPostPreDataLengthExceededError", 400},
 		{errors.Join(awsig.ErrMalformedPOSTRequest, awsig.ErrMessageTooLarge), "MaxPostPreDataLengthExceededError", 400},
+		{awsig.ErrSignatureDoesNotMatch, "SignatureDoesNotMatch", 403},
+		{awsig.ErrInvalidAccessKeyID, "InvalidAccessKeyId", 403},
+		{awsig.ErrMissingContentLength, "MissingContentLength", 411},
+		{errors.Join(awsig.ErrEntityTooSmall, awsig.ErrInvalidChunkSize), "InvalidChunkSizeError", 400},
+		{errors.Join(awsig.ErrMalformedPOSTRequest, awsig.ErrMissingPOSTFile), "InvalidArgument", 400},
 		{errors.New("unexpected failure"), "InternalError", 500},
 	} {
 		t.Run(tc.err.Error(), func(t *testing.T) {
