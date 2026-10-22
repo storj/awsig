@@ -33,6 +33,12 @@ are rejected with `ErrInvalidRequest` and must use SigV4. Botocore's SigV2 list
 does not sign these operation selectors. Applications adding other operation
 selectors absent from the list must also require SigV4 for those operations.
 
+Presigned SigV2 supports query-transported `x-amz-*`, `content-type`, and
+`content-md5` headers, matching botocore's `HmacV1QueryAuth`. These values are
+verified without changing `r.Header`; applications must consume the values from
+the query, including requesting body checksum verification for `content-md5`.
+Conflicting query and header values are rejected.
+
 ## POST policy validation
 
 For multipart POST uploads, `Verify` authenticates the signature over the policy;

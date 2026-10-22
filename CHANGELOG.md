@@ -13,6 +13,10 @@
   excluded by that list (`encryption`, `legal-hold`, `retention`,
   `intelligent-tiering`, `ownershipControls`, `policyStatus`, and
   `publicAccessBlock`) are rejected with `ErrInvalidRequest`; use SigV4 for them.
+- Presigned SigV2 signs `x-amz-*`, `content-type`, and `content-md5` headers
+  transported in the query, as botocore's `HmacV1QueryAuth` sends them, instead
+  of failing with `ErrSignatureDoesNotMatch`. Ambiguous, malformed, or
+  conflicting values are rejected with `ErrInvalidRequest`.
 - SigV4 S3 canonicalization preserves the escaped path exactly as sent, including
   encoded slashes and the case of percent escapes, instead of decoding and
   re-encoding it. Non-S3 services apply another URI-encoding pass to the escaped
