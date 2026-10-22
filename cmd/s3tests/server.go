@@ -766,6 +766,7 @@ var awsigErrorResponses = []struct {
 	{awsig.ErrInvalidPresignedXAmzContentSHA256, http.StatusBadRequest, "XAmzContentSHA256Mismatch", "The provided 'x-amz-content-sha256' header does not match what was computed."},
 	{awsig.ErrInvalidRequest, http.StatusBadRequest, "InvalidRequest", "The request is invalid."},
 	{awsig.ErrInvalidSignature, http.StatusForbidden, "SignatureDoesNotMatch", "The request signature we calculated does not match the signature you provided. Check your key and signing method."},
+	{awsig.ErrInvalidToken, http.StatusBadRequest, "InvalidToken", "The provided token is malformed or otherwise invalid."},
 	{awsig.ErrInvalidXAmzContentSHA256, http.StatusBadRequest, "InvalidArgument", "x-amz-content-sha256 must be UNSIGNED-PAYLOAD, STREAMING-AWS4-HMAC-SHA256-PAYLOAD, or a valid sha256 value."},
 	{awsig.ErrInvalidXAmzDecodedContentLength, http.StatusLengthRequired, "MissingContentLength", "You must provide the Content-Length HTTP header."},
 	{awsig.ErrMalformedPOSTRequest, http.StatusBadRequest, "MalformedPOSTRequest", "The body of your POST request is not well-formed multipart/form-data."},

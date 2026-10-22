@@ -19,6 +19,7 @@ func TestAWSigErrorResponses(t *testing.T) {
 		code   string
 		status int
 	}{
+		{awsig.ErrInvalidToken, "InvalidToken", 400},
 		{awsig.ErrInvalidRequest, "InvalidRequest", 400},
 		{awsig.ErrMessageTooLarge, "MaxPostPreDataLengthExceededError", 400},
 		{errors.Join(awsig.ErrMalformedPOSTRequest, awsig.ErrMessageTooLarge), "MaxPostPreDataLengthExceededError", 400},

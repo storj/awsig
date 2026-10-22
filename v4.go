@@ -1203,7 +1203,7 @@ func (v4 *V4[T]) verifyPost(ctx context.Context, form PostForm) (v4VerifiedData[
 		return v4VerifiedData[T]{}, ErrMissingPOSTPolicy
 	}
 
-	secretAccessKey, data, err := v4.provider.Provide(ctx, credential.accessKeyID)
+	secretAccessKey, data, err := provideCredentials(ctx, v4.provider, credential.accessKeyID, postFormSessionTokens(form))
 	if err != nil {
 		return v4VerifiedData[T]{}, err
 	}
@@ -1263,7 +1263,7 @@ func (v4 *V4[T]) verify(r *http.Request, query url.Values) (v4VerifiedData[T], e
 		return v4VerifiedData[T]{}, err
 	}
 
-	secretAccessKey, data, err := v4.provider.Provide(r.Context(), authorization.credential.accessKeyID)
+	secretAccessKey, data, err := provideCredentials(r.Context(), v4.provider, authorization.credential.accessKeyID, r.Header.Values(queryXAmzSecurityToken))
 	if err != nil {
 		return v4VerifiedData[T]{}, err
 	}
@@ -1323,7 +1323,12 @@ func (v4 *V4[T]) verifyPresigned(r *http.Request, query url.Values) (v4VerifiedD
 		return v4VerifiedData[T]{}, err
 	}
 
-	secretAccessKey, data, err := v4.provider.Provide(r.Context(), authorization.credential.accessKeyID)
+	// SigV4 query keys are case-sensitive: only X-Amz-Security-Token is an
+	// authentication token. Other casings remain ordinary signed query data.
+	// SigV2 instead transports case-insensitive HTTP headers in its query.
+	// parseAuthorizationFromQuery rejects unsigned token headers. Signed token
+	// headers remain ordinary signed data; the provider validates only this query token.
+	secretAccessKey, data, err := provideCredentials(r.Context(), v4.provider, authorization.credential.accessKeyID, query[queryXAmzSecurityToken])
 	if err != nil {
 		return v4VerifiedData[T]{}, err
 	}
@@ -1365,6 +1370,11 @@ func (v4 *V4[T]) verifyPresigned(r *http.Request, query url.Values) (v4VerifiedD
 
 // Verify verifies the AWS Signature Version 4 for the given request and
 // returns a verified request.
+//
+// For presigned requests, only the X-Amz-Security-Token query parameter is
+// passed to the credentials provider. A token header must be signed but is not
+// validated as a session token; use VerifiedRequest.AuthData for the provider's
+// validated identity.
 //
 // See [VerifiedRequest.PostForm] for multipart POST policy validation requirements.
 func (v4 *V4[T]) Verify(r *http.Request) (*V4VerifiedRequest[T], error) {

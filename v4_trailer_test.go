@@ -5,7 +5,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -58,21 +57,11 @@ func TestV4TrailerHeaderValidation(t *testing.T) {
 
 func TestV4PresignedRejectsUnexpectedTrailer(t *testing.T) {
 	now := time.Date(2026, time.September, 23, 0, 0, 0, 0, time.UTC)
-	v := NewV4(simpleCredentialsProvider{accessKeyID: "key", secretAccessKey: "secret"}, V4Config{Region: "us-east-1", Service: "s3"})
+	v := NewV4(tokenlessProvider{}, V4Config{Region: "us-east-1", Service: "s3"})
 	v.now = func() time.Time { return now }
 	for _, trailer := range []string{"", "x-amz-checksum-crc32", "x-amz-checksum-foo"} {
 		t.Run(trailer, func(t *testing.T) {
-			r := httptest.NewRequest(http.MethodGet, "https://example.com/bucket/key", nil)
-			sc := scope{date: "20260923", region: "us-east-1", service: "s3"}
-			q := url.Values{}
-			q.Set(queryXAmzAlgorithm, "AWS4-HMAC-SHA256")
-			q.Set(queryXAmzCredential, "key/"+sc.String())
-			q.Set(queryXAmzDate, now.Format(timeFormatISO8601))
-			q.Set(queryXAmzExpires, "3600")
-			q.Set(queryXAmzSignedHeaders, "host")
-			sig := calculateSignatureV4(signatureV4Data{dateTime: now.Format(timeFormatISO8601), scope: sc, digest: v.canonicalRequestHash(r, q, []string{"host"}, unsignedPayload)}, "secret")
-			q.Set(queryXAmzSignature, sig.String())
-			r.URL.RawQuery = q.Encode()
+			r := sessionRequest(t, 4, "query", "", now)
 			if trailer != "" {
 				r.Header.Set(headerXAmzTrailer, trailer)
 				q := r.URL.Query()

@@ -405,7 +405,7 @@ func (v2 *V2[T]) verifyPost(ctx context.Context, form PostForm) (v2VerifiedData[
 	}
 
 	accessKeyID := form.Get(queryAWSAccessKeyId).Value
-	secretAccessKey, data, err := v2.provider.Provide(ctx, accessKeyID)
+	secretAccessKey, data, err := provideCredentials(ctx, v2.provider, accessKeyID, postFormSessionTokens(form))
 	if err != nil {
 		return v2VerifiedData[T]{}, err
 	}
@@ -440,7 +440,7 @@ func (v2 *V2[T]) verify(r *http.Request, query url.Values, virtualHostedBucket s
 		return v2VerifiedData[T]{}, err
 	}
 
-	secretAccessKey, data, err := v2.provider.Provide(r.Context(), authorization.accessKeyID)
+	secretAccessKey, data, err := provideCredentials(r.Context(), v2.provider, authorization.accessKeyID, r.Header.Values(queryXAmzSecurityToken))
 	if err != nil {
 		return v2VerifiedData[T]{}, err
 	}
@@ -476,8 +476,8 @@ func validV2QueryHeader(name, value string) bool {
 }
 
 // v2PresignedRequest restores headers transported in the query by SigV2 signers.
-// Reject ambiguous values so signature verification uses well-defined headers,
-// without modifying the caller's request.
+// Reject ambiguous values so credential lookup and signature verification use
+// the same headers, without modifying the caller's request.
 func v2PresignedRequest(r *http.Request, query url.Values) (*http.Request, error) {
 	request := new(http.Request)
 	*request = *r
@@ -492,8 +492,12 @@ func v2PresignedRequest(r *http.Request, query url.Values) (*http.Request, error
 		if !strings.HasPrefix(key, xAmzHeaderPrefix) && key != headerContentType && key != headerContentMD5 {
 			continue
 		}
+		invalidHeader := ErrInvalidRequest
+		if key == strings.ToLower(queryXAmzSecurityToken) {
+			invalidHeader = ErrInvalidToken
+		}
 		if seen[key] || len(values) != 1 {
-			return nil, nestError(ErrInvalidRequest, "ambiguous presigned header: %s", key)
+			return nil, nestError(invalidHeader, "ambiguous presigned header: %s", key)
 		}
 		if !validV2QueryHeader(originalKey, values[0]) {
 			return nil, nestError(ErrInvalidRequest, "invalid presigned header: %q", originalKey)
@@ -503,7 +507,7 @@ func v2PresignedRequest(r *http.Request, query url.Values) (*http.Request, error
 		// signers trim surrounding whitespace before canonicalizing headers.
 		value := strings.TrimSpace(values[0])
 		if existing := request.Header.Values(key); len(existing) != 0 && (len(existing) != 1 || strings.TrimSpace(existing[0]) != value) {
-			return nil, nestError(ErrInvalidRequest, "conflicting presigned header: %s", key)
+			return nil, nestError(invalidHeader, "conflicting presigned header: %s", key)
 		}
 		request.Header.Set(key, value)
 	}
@@ -538,7 +542,7 @@ func (v2 *V2[T]) verifyPresigned(r *http.Request, query url.Values, virtualHoste
 	if err != nil {
 		return v2VerifiedData[T]{}, err
 	}
-	secretAccessKey, data, err := v2.provider.Provide(r.Context(), accessKeyID)
+	secretAccessKey, data, err := provideCredentials(r.Context(), v2.provider, accessKeyID, r.Header.Values(queryXAmzSecurityToken))
 	if err != nil {
 		return v2VerifiedData[T]{}, err
 	}
