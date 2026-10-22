@@ -2,6 +2,7 @@ package awsig
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -132,10 +133,18 @@ func Example() {
 	// Hello, World!
 }
 
-func errToHTTPError(w http.ResponseWriter, _ error) {
-	defaultCode := http.StatusInternalServerError
-	// TODO: match awsig errors to HTTP codes
-	http.Error(w, http.StatusText(defaultCode), defaultCode)
+// errToHTTPError writes an error response for err. The errors in this example are the client's:
+// authentication failures are 403 and others 400. See cmd/s3tests for a mapping to S3 error
+// codes.
+func errToHTTPError(w http.ResponseWriter, err error) {
+	code := http.StatusBadRequest
+	switch {
+	case errors.Is(err, ErrAccessDenied), errors.Is(err, ErrInvalidAccessKeyID), errors.Is(err, ErrInvalidDateHeader),
+		errors.Is(err, ErrInvalidSignature), errors.Is(err, ErrRequestExpired), errors.Is(err, ErrRequestNotYetValid),
+		errors.Is(err, ErrRequestTimeTooSkewed), errors.Is(err, ErrSignatureDoesNotMatch), errors.Is(err, ErrUnsignedHeader):
+		code = http.StatusForbidden
+	}
+	http.Error(w, http.StatusText(code), code)
 }
 
 func serveHTTPAt[T any](v *V2V4[T], h http.HandlerFunc, w http.ResponseWriter, r *http.Request, t time.Time) {
