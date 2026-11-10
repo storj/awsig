@@ -96,7 +96,9 @@ type v4Reader struct {
 
 	// metadata holds chunk metadata and the trailer, so that they can be read whatever the size
 	// of the caller's buffer.
-	metadata               [max(chunkTrailerMaxLength, len(chunkSignaturePrefix)+signatureV4EncodedLength)]byte
+	metadata [max(chunkTrailerMaxLength, len(chunkSignaturePrefix)+signatureV4EncodedLength)]byte
+	// err is the first error, or io.EOF, that Read returned. Read returns it again from then on.
+	err                    error
 	chunkCount             int
 	chunkBytesLeft         int64
 	chunkSHA256            hash.Hash
@@ -460,7 +462,7 @@ func (r *v4Reader) close(buf []byte) error {
 			}
 			return err
 		}
-		if err := r.consumeCRLF(buf); !errors.Is(err, io.EOF) { // TODO(amwolff): latch the error?
+		if err := r.consumeCRLF(buf); !errors.Is(err, io.EOF) {
 			return ErrInvalidRequest
 		}
 	}
@@ -473,6 +475,15 @@ func (r *v4Reader) close(buf []byte) error {
 }
 
 func (r *v4Reader) Read(p []byte) (n int, err error) {
+	if r.err != nil {
+		return 0, r.err
+	}
+	defer func() {
+		if err != nil {
+			r.err = err
+		}
+	}()
+
 	if !r.multipleChunks { // fast path for single chunk
 		if n, err = r.ir.Read(p); errors.Is(err, io.EOF) {
 			if err := r.ir.verify(r.integrity); err != nil {
