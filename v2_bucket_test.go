@@ -1,6 +1,7 @@
 package awsig
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -52,4 +53,25 @@ func TestV2BucketPath(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestV2PostMissingSignature(t *testing.T) {
+	v2 := NewV2[exampleAuthData](simpleCredentialsProvider{accessKeyID: "key", secretAccessKey: "secret"})
+	// PostForm canonicalizes its keys, so build it like the parser does.
+	form := make(PostForm)
+	form.Set(queryAWSAccessKeyId, PostFormElement{Value: "key"})
+	form.Set(formNamePolicy, PostFormElement{Value: "e30="})
+	_, err := v2.verifyPost(t.Context(), form)
+	assert.That(t, errors.Is(err, ErrInvalidArgument))
+}
+
+func TestV2PostWithoutCredentials(t *testing.T) {
+	// S3 answers an anonymous POST, with neither AWSAccessKeyId nor Signature, with AccessDenied, so
+	// it isn't the missing-Signature InvalidArgument.
+	v2 := NewV2[exampleAuthData](simpleCredentialsProvider{accessKeyID: "key", secretAccessKey: "secret"})
+	form := make(PostForm)
+	form.Set(formNamePolicy, PostFormElement{Value: "e30="})
+	_, err := v2.verifyPost(t.Context(), form)
+	assert.Error(t, err)
+	assert.False(t, errors.Is(err, ErrInvalidArgument))
 }
