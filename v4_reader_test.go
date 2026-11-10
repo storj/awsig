@@ -74,3 +74,34 @@ func TestV4ReaderSmallBuffers(t *testing.T) {
 		assert.Equal(t, "hello", string(got))
 	}
 }
+
+func TestV4ReaderRepeatsFirstResult(t *testing.T) {
+	// CRC32 of "x" is jNwWgw==.
+	for _, tc := range []struct {
+		checksum string
+		want     error
+	}{
+		{"jNwWgw==", io.EOF},
+		{"AAAAAA==", ErrBadDigest},
+	} {
+		opts := parsedXAmzContentSHA256{unsigned: true, streaming: true, trailer: true, decodedContentLength: 1}
+		body := "1\r\nx\r\n0\r\nx-amz-checksum-crc32:" + tc.checksum + "\r\n\r\n"
+		vr, err := newV4VerifiedRequest(strings.NewReader(body), v4VerifiedData[struct{}]{options: opts})
+		assert.NoError(t, err)
+		req, err := NewTrailingChecksumRequest(AlgorithmCRC32)
+		assert.NoError(t, err)
+		r, err := vr.Reader(req)
+		assert.NoError(t, err)
+
+		p := make([]byte, 64)
+		n, err := r.Read(p)
+		assert.NoError(t, err)
+		assert.Equal(t, "x", string(p[:n]))
+		// Once the body ends, every read returns how it ended.
+		for range 3 {
+			n, err = r.Read(p)
+			assert.Equal(t, 0, n)
+			assert.That(t, errors.Is(err, tc.want))
+		}
+	}
+}
