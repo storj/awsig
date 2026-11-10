@@ -115,7 +115,9 @@ var httpTimeFormats = []string{
 	time.ANSIC,
 }
 
-var errMessageTooLarge = errors.New("message too large")
+// ErrMessageTooLarge indicates that the multipart form fields before the file exceed
+// the 20 KB limit. Verify returns it nested in ErrMalformedPOSTRequest.
+var ErrMessageTooLarge = errors.New("message too large")
 
 // CredentialsProvider is the interface that all users of this package
 // must implement. Provide is called by signature verifiers. If the
@@ -381,6 +383,9 @@ type limitedReader struct {
 	r       io.Reader
 	n       int64
 	enabled bool
+	// reached is set once a Read was refused because of the limit. Readers such as mime/multipart
+	// don't always pass errLimitReached on.
+	reached bool
 }
 
 func (l *limitedReader) Read(p []byte) (n int, err error) {
@@ -388,6 +393,7 @@ func (l *limitedReader) Read(p []byte) (n int, err error) {
 		return l.r.Read(p)
 	}
 	if l.n <= 0 {
+		l.reached = true
 		return 0, errors.Join(io.EOF, errLimitReached)
 	}
 
@@ -417,8 +423,8 @@ func parseMultipartFormUntilFile(r io.Reader, boundary string) (io.ReadCloser, P
 	for {
 		part, err := mr.NextPart()
 		if err != nil {
-			if errors.Is(err, errLimitReached) {
-				err = errMessageTooLarge
+			if lr.reached {
+				err = ErrMessageTooLarge
 			} else if errors.Is(err, io.EOF) {
 				break
 			}
@@ -438,8 +444,8 @@ func parseMultipartFormUntilFile(r io.Reader, boundary string) (io.ReadCloser, P
 
 		b, err := io.ReadAll(part)
 		if err != nil {
-			if errors.Is(err, errLimitReached) {
-				err = errMessageTooLarge
+			if lr.reached {
+				err = ErrMessageTooLarge
 			}
 			if errClose := part.Close(); errClose != nil {
 				err = errors.Join(err, errClose)
