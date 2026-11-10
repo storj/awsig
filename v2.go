@@ -276,7 +276,30 @@ var v2SignedSubresources = map[string]bool{
 	"response-content-encoding":    false,
 }
 
+// signatureMatches reports whether signature is the signature of r. S3 signs a path-style request
+// for /bucket as /bucket, but botocore signs it as /bucket/, so both are accepted.
+func (v2 *V2[T]) signatureMatches(r *http.Request, dateElement, virtualHostedBucket, key string, signature signatureV2) bool {
+	if v2.calculateSignature(r, dateElement, virtualHostedBucket, key).compare(signature) {
+		return true
+	}
+	return isPathStyleBucketOnly(r, virtualHostedBucket) &&
+		v2.calculateSignatureWithSlash(r, dateElement, virtualHostedBucket, key, false).compare(signature)
+}
+
+// isPathStyleBucketOnly reports whether r is a path-style request for /bucket, without a trailing
+// slash.
+func isPathStyleBucketOnly(r *http.Request, virtualHostedBucket string) bool {
+	path := strings.TrimPrefix(r.URL.Path, "/")
+	return virtualHostedBucket == "" && path != "" && !strings.Contains(path, "/")
+}
+
 func (v2 *V2[T]) calculateSignature(r *http.Request, dateElement, virtualHostedBucket, key string) signatureV2 {
+	return v2.calculateSignatureWithSlash(r, dateElement, virtualHostedBucket, key, true)
+}
+
+// calculateSignatureWithSlash calculates the signature of r. If bucketSlash is true, a path-style
+// request for /bucket is signed as /bucket/.
+func (v2 *V2[T]) calculateSignatureWithSlash(r *http.Request, dateElement, virtualHostedBucket, key string, bucketSlash bool) signatureV2 {
 	b := newHashBuilder(func() hash.Hash { return hmac.New(sha1.New, []byte(key)) })
 
 	b.WriteString(r.Method)
@@ -315,13 +338,10 @@ func (v2 *V2[T]) calculateSignature(r *http.Request, dateElement, virtualHostedB
 	// might contain an invalid encoding the software down the chain
 	// might use long after we've authenticated this request.
 	b.WriteString(r.URL.EscapedPath())
-	if virtualHostedBucket == "" {
-		r := strings.TrimPrefix(r.URL.Path, "/")
-		if r != "" && strings.IndexByte(r, '/') < 0 {
-			// For some reason, they sometimes sign requests that
-			// contain just the bucket name with a trailing slash.
-			b.WriteByte('/')
-		}
+	if bucketSlash && isPathStyleBucketOnly(r, virtualHostedBucket) {
+		// For some reason, they sometimes sign requests that
+		// contain just the bucket name with a trailing slash.
+		b.WriteByte('/')
 	}
 
 	if query := r.URL.Query(); len(query) > 0 {
@@ -415,9 +435,7 @@ func (v2 *V2[T]) verify(r *http.Request, virtualHostedBucket string) (v2Verified
 		return v2VerifiedData[T]{}, err
 	}
 
-	signature := v2.calculateSignature(r, headerDateValue, virtualHostedBucket, secretAccessKey)
-
-	if !signature.compare(authorization.signature) {
+	if !v2.signatureMatches(r, headerDateValue, virtualHostedBucket, secretAccessKey, authorization.signature) {
 		return v2VerifiedData[T]{}, ErrSignatureDoesNotMatch
 	}
 
@@ -452,7 +470,7 @@ func (v2 *V2[T]) verifyPresigned(r *http.Request, query url.Values, virtualHoste
 		return v2VerifiedData[T]{}, err
 	}
 
-	if !v2.calculateSignature(r, rawExpires, virtualHostedBucket, secretAccessKey).compare(signature) {
+	if !v2.signatureMatches(r, rawExpires, virtualHostedBucket, secretAccessKey, signature) {
 		return v2VerifiedData[T]{}, ErrSignatureDoesNotMatch
 	}
 
